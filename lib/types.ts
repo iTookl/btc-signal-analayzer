@@ -1,0 +1,59 @@
+export interface Candle {
+  t: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+}
+
+export type Direction = 'bull' | 'bear' | 'neutral';
+export type Lang = 'en' | 'ru';
+
+export type VolatilityLabel = 'high' | 'squeeze' | 'normal';
+export type PatternType = 'bull_engulf' | 'bear_engulf' | 'doji' | 'normal' | 'insufficient';
+
+export interface RawTrend { up: number; down: number; total: number; }
+export interface RawMomentum { isBull: boolean; isStrong: boolean; }
+export interface RawWicks { upperPct: number; lowerPct: number; }
+export interface RawVolatility { label: VolatilityLabel; ratio: number; }
+export interface RawPattern { type: PatternType; }
+export interface RawEma { ema9: number; ema21: number; isBull: boolean; }
+
+export type AnyRaw = RawTrend | RawMomentum | RawWicks | RawVolatility | RawPattern | RawEma | null;
+
+export interface SignalItem<T extends AnyRaw = AnyRaw> {
+  raw: T;
+  direction: Direction;
+}
+
+export interface SignalResult {
+  score: number;
+  signal: Direction;
+  signals: {
+    trend:      SignalItem<RawTrend | null>;
+    momentum:   SignalItem<RawMomentum | null>;
+    wicks:      SignalItem<RawWicks | null>;
+    volatility: SignalItem<RawVolatility | null>;
+    pattern:    SignalItem<RawPattern | null>;
+    ema:        SignalItem<RawEma | null>;
+  };
+}
+
+export interface PolymarketData {
+  up: number | null;
+  down: number | null;
+  error?: string;
+}
+
+export type DivergenceType =
+  | 'unavailable'
+  | 'bull_divergence'
+  | 'bear_divergence'
+  | 'consensus'
+  | 'neutral';
+
+export interface DivergenceResult {
+  type: DivergenceType;
+  upPct: number | null;
+}

@@ -1,65 +1,255 @@
-import Image from "next/image";
+'use client';
+
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import dynamic from 'next/dynamic';
+import { Candle, PolymarketData, Lang } from '@/lib/types';
+import { analyze, analyzeDivergence } from '@/lib/analyzer';
+import { T } from '@/lib/i18n';
+import SignalCard from '@/components/SignalCard';
+import SignalGrid from '@/components/SignalGrid';
+import PolymarketBar from '@/components/PolymarketBar';
+import DivergenceBox from '@/components/DivergenceBox';
+import PriceDisplay from '@/components/PriceDisplay';
+
+const CandleChart = dynamic(() => import('@/components/CandleChart'), { ssr: false });
+
+// ── Language persistence ──────────────────────────────────────────────────
+
+function useLang(): [Lang, () => void] {
+  const [lang, setLang] = useState<Lang>('ru');
+  useEffect(() => {
+    const s = localStorage.getItem('lang') as Lang | null;
+    if (s === 'en' || s === 'ru') setLang(s);
+  }, []);
+  const toggle = useCallback(() => {
+    setLang(prev => {
+      const next: Lang = prev === 'ru' ? 'en' : 'ru';
+      localStorage.setItem('lang', next);
+      return next;
+    });
+  }, []);
+  return [lang, toggle];
+}
+
+// ── Binance WebSocket + Polymarket polling ────────────────────────────────
+
+interface BinanceKlineMsg {
+  k: { t: number; o: string; h: string; l: string; c: string; v: string };
+}
+
+function useMarketData() {
+  const [candles,    setCandles]    = useState<Candle[]>([]);
+  const [polymarket, setPolymarket] = useState<PolymarketData>({ up: null, down: null });
+  const [loading,    setLoading]    = useState(true);
+  const [connected,  setConnected]  = useState(false);
+  const [lastTick,   setLastTick]   = useState<Date | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // Synchronous — no 1-render delay, so ghost candle appears on initial REST load
+  const analysis = useMemo(() => candles.length > 0 ? analyze(candles) : null, [candles]);
+
+  // Initial REST fetch for candles + polymarket
+  useEffect(() => {
+    (async () => {
+      try {
+        const [cr, pr] = await Promise.all([
+          fetch('/api/candles'),
+          fetch('/api/polymarket'),
+        ]);
+        setCandles(await cr.json());
+        setPolymarket(await pr.json());
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  // Binance WebSocket — live kline stream
+  useEffect(() => {
+    let destroyed = false;
+    const connect = () => {
+      if (destroyed) return;
+      const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@kline_15m');
+      wsRef.current = ws;
+      ws.onopen  = () => { if (!destroyed) setConnected(true); };
+      ws.onclose = () => { if (!destroyed) { setConnected(false); setTimeout(connect, 3000); } };
+      ws.onerror = () => ws.close();
+      ws.onmessage = (e: MessageEvent) => {
+        const msg: BinanceKlineMsg = JSON.parse(e.data as string);
+        const k = msg.k;
+        const tick: Candle = { t: k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v };
+        setCandles(prev => {
+          if (!prev.length) return prev;
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last.t === tick.t) { updated[updated.length - 1] = tick; }
+          else { updated.push(tick); if (updated.length > 50) updated.shift(); }
+          return updated;
+        });
+        setLastTick(new Date());
+      };
+    };
+    connect();
+    return () => { destroyed = true; wsRef.current?.close(); };
+  }, []);
+
+  // Polymarket silent refresh every 60s
+  useEffect(() => {
+    const iv = setInterval(async () => {
+      try { setPolymarket(await (await fetch('/api/polymarket')).json()); }
+      catch { /* silent */ }
+    }, 60_000);
+    return () => clearInterval(iv);
+  }, []);
+
+  return { candles, polymarket, analysis, loading, connected, lastTick };
+}
+
+// ── Page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
+  const [lang, toggleLang] = useLang();
+  const { candles, polymarket, analysis, loading, connected, lastTick } = useMarketData();
+  const t = T[lang];
+
+  const lastCandle = candles[candles.length - 1];
+
+  // $ change within the current 15m candle (open → live close from Binance WS)
+  const candleChange = lastCandle ? lastCandle.c - lastCandle.o : null;
+
+  const divergence = analysis ? analyzeDivergence(analysis.signal, polymarket.up) : null;
+
+  // Last 5 complete candles (excluding the currently-forming one)
+  const marketCtx = useMemo(() => {
+    if (candles.length < 6) return null;
+    const slice = candles.slice(-6, -1);
+    const bull = slice.filter(c => c.c > c.o).length;
+    const move = slice[slice.length - 1].c - slice[0].o;
+    return { bull, bear: 5 - bull, move };
+  }, [candles]);
+
+  const tickStr = lastTick
+    ? lastTick.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : '—';
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <main className="min-h-screen" style={{ background: '#0a0e1a', color: '#c8d8e8', fontFamily: 'monospace' }}>
+      <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
+
+        {/* Header */}
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="text-xl font-bold tracking-widest" style={{ color: '#c8d8e8' }}>
+              {t.title}
+            </h1>
+            <div className="flex items-center gap-2 mt-1">
+              <span
+                className="inline-block w-2 h-2 rounded-full"
+                style={{
+                  background: connected ? '#3d9e6e' : loading ? '#a0a060' : '#e05050',
+                  boxShadow: connected ? '0 0 6px #3d9e6e' : 'none',
+                  animation: connected ? 'pulse-dot 2s infinite' : 'none',
+                }}
+              />
+              <span className="text-xs" style={{ color: '#8899aa' }}>
+                {loading
+                  ? t.loading
+                  : connected
+                  ? `${t.liveStatus} · ${tickStr}`
+                  : `${t.updatedAt} ${tickStr}`}
+              </span>
+            </div>
+          </div>
+          <button
+            onClick={toggleLang}
+            className="px-4 py-2 rounded-lg text-sm font-bold"
+            style={{ background: '#0f1726', border: '1px solid #1e2d4a', color: '#8899aa', cursor: 'pointer' }}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+            {lang === 'ru' ? 'EN' : 'RU'}
+          </button>
+        </div>
+
+        {/* Stats row */}
+        <div className="grid grid-cols-2 gap-3">
+          <div
+            className="rounded-xl p-3 text-center"
+            style={{ background: '#0f1726', border: '1px solid #1e2d4a' }}
+          >
+            <div className="text-xs mb-1" style={{ color: '#8899aa' }}>
+              {t.priceLabel}
+              <span className="ml-1" style={{ color: '#4a5a6a' }}>({t.priceSource})</span>
+            </div>
+            <PriceDisplay
+              price={lastCandle?.c ?? null}
+              updatedAt={null}
+              candleChange={candleChange}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          </div>
+
+          <div
+            className="rounded-xl p-3 text-center"
+            style={{ background: '#0f1726', border: '1px solid #1e2d4a' }}
           >
-            Documentation
-          </a>
+            <div className="text-xs mb-1" style={{ color: '#8899aa' }}>{t.candlesLabel}</div>
+            <div className="text-lg font-bold" style={{ color: '#c8d8e8' }}>{candles.length}</div>
+            <div className="text-xs" style={{ color: '#8899aa' }}>{t.intervalLabel}</div>
+          </div>
         </div>
-      </main>
-    </div>
+
+        {/* Signal card */}
+        {analysis ? (
+          <SignalCard signal={analysis.signal} score={analysis.score} lang={lang} />
+        ) : (
+          <div className="rounded-xl p-8 text-center" style={{ background: '#0f1726', border: '1px solid #1e2d4a', color: '#8899aa' }}>
+            {t.loading}
+          </div>
+        )}
+
+        {/* Market context — last 5 complete candles */}
+        {marketCtx && (
+          <div
+            className="px-4 py-3 rounded-xl text-sm"
+            style={{ background: '#0f1726', border: '1px solid #1e2d4a', color: '#8899aa', fontFamily: 'monospace' }}
+          >
+            <span style={{ color: marketCtx.bull >= 4 ? '#3d9e6e' : marketCtx.bear >= 4 ? '#e05050' : '#a0a060' }}>
+              {t.marketContext(marketCtx.bull, marketCtx.bear, marketCtx.move)}
+            </span>
+          </div>
+        )}
+
+        {/* Candle chart with ghost candle */}
+        {candles.length > 0 && (
+          <CandleChart
+            candles={candles}
+            signal={analysis?.signal ?? null}
+            lang={lang}
+          />
+        )}
+
+        {/* Signals grid */}
+        {analysis && <SignalGrid signals={analysis.signals} lang={lang} />}
+
+        {/* Polymarket */}
+        <PolymarketBar data={polymarket} lang={lang} />
+
+        {/* Divergence */}
+        {divergence && <DivergenceBox result={divergence} lang={lang} />}
+
+        {/* Footer */}
+        <div
+          className="text-center text-xs py-4"
+          style={{ color: '#4a5a6a', borderTop: '1px solid #1e2d4a' }}
+        >
+          {t.footer}
+        </div>
+      </div>
+
+      <style>{`
+        @keyframes pulse-dot {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.3; }
+        }
+      `}</style>
+    </main>
   );
 }
