@@ -70,31 +70,51 @@ const EN: Translations = {
     rsi: 'RSI 14', volume: 'Volume',
   },
   dirIcon: { bull: '▲', bear: '▼', neutral: '◆' },
-  trend:      (r) => `${r.up}↑ / ${r.down}↓ of ${r.total}`,
-  momentum:   (r) => r.isStrong
-    ? (r.isBull ? 'Strong bullish' : 'Strong bearish')
-    : (r.isBull ? 'Weak bullish'   : 'Weak bearish'),
-  wicks:      (r) => `Upper: ${r.upperPct}% / Lower: ${r.lowerPct}%`,
-  volatility: (r) => {
-    const label = r.label === 'high' ? 'High' : r.label === 'squeeze' ? 'Squeeze' : 'Normal';
-    return `${label} (×${r.ratio.toFixed(2)})`;
+  trend: (r) => {
+    if (r.up >= 6) return `Uptrend — ${r.up} of ${r.total} candles green`;
+    if (r.down >= 6) return `Downtrend — ${r.down} of ${r.total} candles red`;
+    if (r.up === r.down) return `Sideways — ${r.up}↑ ${r.down}↓, no clear direction`;
+    return r.up > r.down
+      ? `Slight up — ${r.up}↑ vs ${r.down}↓`
+      : `Slight down — ${r.down}↓ vs ${r.up}↑`;
   },
-  pattern:    (r) => ({
-    bull_engulf: 'Bullish engulfing',
-    bear_engulf: 'Bearish engulfing',
-    doji: 'Doji',
-    normal: 'Normal',
-    insufficient: 'Insufficient data',
+  momentum: (r) => r.isStrong
+    ? (r.isBull ? 'Strong bull candle — bigger than usual' : 'Strong bear candle — bigger than usual')
+    : (r.isBull ? 'Weak rally — smaller than usual body'   : 'Weak selloff — smaller than usual body'),
+  wicks: (r) => {
+    if (r.lowerPct >= 30) return `Long lower wick (${r.lowerPct}%) — buyers defended the low`;
+    if (r.upperPct >= 30) return `Long upper wick (${r.upperPct}%) — sellers capped the rally`;
+    if (r.lowerPct > r.upperPct) return `Lower wick bigger (${r.lowerPct}%) — bullish pressure`;
+    if (r.upperPct > r.lowerPct) return `Upper wick bigger (${r.upperPct}%) — selling pressure`;
+    return `Wicks balanced — no pressure signal`;
+  },
+  volatility: (r) => {
+    if (r.label === 'high')    return `High volatility — ${r.ratio.toFixed(1)}× above normal`;
+    if (r.label === 'squeeze') return `Quiet market — ${(1 / r.ratio).toFixed(1)}× below normal, expect a move`;
+    return `Normal activity (×${r.ratio.toFixed(2)})`;
+  },
+  pattern: (r) => ({
+    bull_engulf:  'Bullish engulfing — reversal signal up',
+    bear_engulf:  'Bearish engulfing — reversal signal down',
+    doji:         'Doji — market indecision',
+    normal:       'No pattern found',
+    insufficient: 'Not enough data',
   })[r.type],
-  ema:    (r) => `EMA9: ${r.ema9.toFixed(0)} / EMA21: ${r.ema21.toFixed(0)}`,
-  rsi:    (r) => {
-    const lbl = r.label === 'overbought' ? 'Overbought' : r.label === 'oversold' ? 'Oversold' : 'Neutral';
-    return `${r.value} (${lbl})`;
+  ema: (r) => r.isBull
+    ? `Fast EMA above slow → upward trend`
+    : `Fast EMA below slow → downward trend`,
+  rsi: (r) => {
+    if (r.value >= 70) return `${r.value} — overbought, pullback likely`;
+    if (r.value >= 60) return `${r.value} — slightly elevated, watch for reversal`;
+    if (r.value <= 30) return `${r.value} — oversold, bounce likely`;
+    if (r.value <= 40) return `${r.value} — slightly low, watch for bounce`;
+    return `${r.value} — neutral zone (40–60)`;
   },
   volume: (r) => {
-    const vol = r.ratio >= 1.5 ? 'High' : r.ratio <= 0.7 ? 'Low' : 'Normal';
     const dir = r.isBull ? 'bullish' : 'bearish';
-    return `${vol} ×${r.ratio.toFixed(1)} (${dir})`;
+    if (r.ratio >= 1.5) return `High ×${r.ratio.toFixed(1)} — confirms ${dir} move`;
+    if (r.ratio <= 0.7) return `Low ×${r.ratio.toFixed(1)} — weak move, treat with caution`;
+    return `Normal ×${r.ratio.toFixed(1)} — ${dir}`;
   },
   divergence: (d) => {
     if (d.type === 'unavailable') return 'Polymarket data unavailable';
@@ -145,31 +165,51 @@ const RU: Translations = {
     rsi: 'RSI 14', volume: 'Объём',
   },
   dirIcon: { bull: '▲', bear: '▼', neutral: '◆' },
-  trend:      (r) => `${r.up}↑ / ${r.down}↓ из ${r.total}`,
-  momentum:   (r) => r.isStrong
-    ? (r.isBull ? 'Сильный рост'  : 'Сильное падение')
-    : (r.isBull ? 'Слабый рост'   : 'Слабое падение'),
-  wicks:      (r) => `Верх: ${r.upperPct}% / Низ: ${r.lowerPct}%`,
-  volatility: (r) => {
-    const label = r.label === 'high' ? 'Высокая' : r.label === 'squeeze' ? 'Сжатие' : 'Норма';
-    return `${label} (×${r.ratio.toFixed(2)})`;
+  trend: (r) => {
+    if (r.up >= 6) return `Рост — ${r.up} из ${r.total} свечей зелёных`;
+    if (r.down >= 6) return `Падение — ${r.down} из ${r.total} свечей красных`;
+    if (r.up === r.down) return `Боковик — ${r.up}↑ ${r.down}↓, направления нет`;
+    return r.up > r.down
+      ? `Слабый рост — ${r.up}↑ против ${r.down}↓`
+      : `Слабое падение — ${r.down}↓ против ${r.up}↑`;
   },
-  pattern:    (r) => ({
-    bull_engulf: 'Бычье поглощение',
-    bear_engulf: 'Медвежье поглощение',
-    doji: 'Доджи',
-    normal: 'Обычная',
+  momentum: (r) => r.isStrong
+    ? (r.isBull ? 'Сильная бычья свеча — крупнее обычного' : 'Сильная медвежья свеча — крупнее обычного')
+    : (r.isBull ? 'Слабый рост — свеча меньше обычного'    : 'Слабое падение — свеча меньше обычного'),
+  wicks: (r) => {
+    if (r.lowerPct >= 30) return `Длинная нижняя тень (${r.lowerPct}%) — покупатели сдержали падение`;
+    if (r.upperPct >= 30) return `Длинная верхняя тень (${r.upperPct}%) — продавцы давят`;
+    if (r.lowerPct > r.upperPct) return `Нижняя тень больше (${r.lowerPct}%) — бычье давление`;
+    if (r.upperPct > r.lowerPct) return `Верхняя тень больше (${r.upperPct}%) — давление продавцов`;
+    return `Тени симметричны — сигнала нет`;
+  },
+  volatility: (r) => {
+    if (r.label === 'high')    return `Высокая волатильность — в ${r.ratio.toFixed(1)}× выше нормы`;
+    if (r.label === 'squeeze') return `Тихий рынок — в ${(1 / r.ratio).toFixed(1)}× тише нормы, жди движения`;
+    return `Обычная активность (×${r.ratio.toFixed(2)})`;
+  },
+  pattern: (r) => ({
+    bull_engulf:  'Бычье поглощение — разворот вверх',
+    bear_engulf:  'Медвежье поглощение — разворот вниз',
+    doji:         'Доджи — рынок не определился',
+    normal:       'Паттерн не найден',
     insufficient: 'Недостаточно данных',
   })[r.type],
-  ema:    (r) => `EMA9: ${r.ema9.toFixed(0)} / EMA21: ${r.ema21.toFixed(0)}`,
-  rsi:    (r) => {
-    const lbl = r.label === 'overbought' ? 'Перекуплен' : r.label === 'oversold' ? 'Перепродан' : 'Нейтрал';
-    return `${r.value} (${lbl})`;
+  ema: (r) => r.isBull
+    ? `Быстрая EMA выше медленной → рост`
+    : `Быстрая EMA ниже медленной → падение`,
+  rsi: (r) => {
+    if (r.value >= 70) return `${r.value} — перекуплен, возможен откат`;
+    if (r.value >= 60) return `${r.value} — близко к перекупленности, осторожно`;
+    if (r.value <= 30) return `${r.value} — перепродан, возможен отскок`;
+    if (r.value <= 40) return `${r.value} — близко к перепроданности, следи`;
+    return `${r.value} — нейтральная зона (40–60)`;
   },
   volume: (r) => {
-    const vol = r.ratio >= 1.5 ? 'Высокий' : r.ratio <= 0.7 ? 'Низкий' : 'Норма';
-    const dir = r.isBull ? 'бычий' : 'медвежий';
-    return `${vol} ×${r.ratio.toFixed(1)} (${dir})`;
+    const dir = r.isBull ? 'бычье' : 'медвежье';
+    if (r.ratio >= 1.5) return `Высокий ×${r.ratio.toFixed(1)} — подтверждает ${dir} движение`;
+    if (r.ratio <= 0.7) return `Низкий ×${r.ratio.toFixed(1)} — слабое движение, осторожно`;
+    return `Обычный ×${r.ratio.toFixed(1)} — ${dir}`;
   },
   divergence: (d) => {
     if (d.type === 'unavailable') return 'Данные Polymarket недоступны';
