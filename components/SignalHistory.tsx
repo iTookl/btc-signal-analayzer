@@ -10,11 +10,10 @@ interface Props {
 }
 
 export default function SignalHistory({ history, interval, lang }: Props) {
-  if (history.length === 0) return null;
-
-  const correct = history.filter(e => e.correct).length;
-  const winPct  = Math.round((correct / history.length) * 100);
-  const winColor = winPct >= 60 ? '#3d9e6e' : winPct >= 50 ? '#a0a060' : '#e05050';
+  const isEmpty  = history.length === 0;
+  const correct  = history.filter(e => e.correct).length;
+  const winPct   = isEmpty ? null : Math.round((correct / history.length) * 100);
+  const winColor = winPct === null ? '#4a5a6a' : winPct >= 60 ? '#3d9e6e' : winPct >= 50 ? '#a0a060' : '#e05050';
 
   return (
     <div className="rounded-xl p-4" style={{ background: '#0f1726', border: '1px solid #1e2d4a' }}>
@@ -25,9 +24,18 @@ export default function SignalHistory({ history, interval, lang }: Props) {
       >
         <span>{T[lang].historyTitle} · {interval.toUpperCase()}</span>
         <span style={{ color: winColor }}>
-          {correct}/{history.length} ({winPct}%)
+          {winPct === null ? '—' : `${correct}/${history.length} (${winPct}%)`}
         </span>
       </div>
+
+      {/* Empty state */}
+      {isEmpty && (
+        <div className="text-xs py-2" style={{ color: '#4a5a6a', fontFamily: 'monospace' }}>
+          {lang === 'ru'
+            ? 'Ждём закрытия первой свечи...'
+            : 'Waiting for the first candle to close...'}
+        </div>
+      )}
 
       {/* Entries */}
       <div className="space-y-1">
