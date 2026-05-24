@@ -14,14 +14,18 @@ export type Interval = '5m' | '15m';
 export type VolatilityLabel = 'high' | 'squeeze' | 'normal';
 export type PatternType = 'bull_engulf' | 'bear_engulf' | 'doji' | 'normal' | 'insufficient';
 
-export interface RawTrend { up: number; down: number; total: number; }
-export interface RawMomentum { isBull: boolean; isStrong: boolean; }
-export interface RawWicks { upperPct: number; lowerPct: number; }
+export interface RawTrend      { up: number; down: number; total: number; }
+export interface RawMomentum   { isBull: boolean; isStrong: boolean; }
+export interface RawWicks      { upperPct: number; lowerPct: number; }
 export interface RawVolatility { label: VolatilityLabel; ratio: number; }
-export interface RawPattern { type: PatternType; }
-export interface RawEma { ema9: number; ema21: number; isBull: boolean; }
+export interface RawPattern    { type: PatternType; }
+export interface RawEma        { ema9: number; ema21: number; isBull: boolean; }
+export interface RawRSI        { value: number; label: 'overbought' | 'neutral' | 'oversold'; }
+export interface RawVolume     { ratio: number; isBull: boolean; }
 
-export type AnyRaw = RawTrend | RawMomentum | RawWicks | RawVolatility | RawPattern | RawEma | null;
+export type AnyRaw =
+  | RawTrend | RawMomentum | RawWicks | RawVolatility
+  | RawPattern | RawEma | RawRSI | RawVolume | null;
 
 export interface SignalItem<T extends AnyRaw = AnyRaw> {
   raw: T;
@@ -31,6 +35,8 @@ export interface SignalItem<T extends AnyRaw = AnyRaw> {
 export interface SignalResult {
   score: number;
   signal: Direction;
+  agreeCount: number;
+  totalCount: number;
   signals: {
     trend:      SignalItem<RawTrend | null>;
     momentum:   SignalItem<RawMomentum | null>;
@@ -38,6 +44,8 @@ export interface SignalResult {
     volatility: SignalItem<RawVolatility | null>;
     pattern:    SignalItem<RawPattern | null>;
     ema:        SignalItem<RawEma | null>;
+    rsi:        SignalItem<RawRSI | null>;
+    volume:     SignalItem<RawVolume | null>;
   };
 }
 
@@ -57,4 +65,13 @@ export type DivergenceType =
 export interface DivergenceResult {
   type: DivergenceType;
   upPct: number | null;
+}
+
+export interface SignalHistoryEntry {
+  candleTime: number;   // outcome candle open time (ms)
+  signal: Direction;    // signal that predicted this candle
+  priceAtOpen: number;  // outcome candle open
+  priceAtClose: number; // outcome candle close
+  correct: boolean;
+  interval: Interval;
 }

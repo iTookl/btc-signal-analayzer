@@ -7,6 +7,8 @@ interface Props {
   signal: Direction;
   score: number;
   lang: Lang;
+  agreeCount: number;
+  totalCount: number;
 }
 
 const SIGNAL_COLOR: Record<Direction, string> = {
@@ -15,7 +17,7 @@ const SIGNAL_COLOR: Record<Direction, string> = {
   neutral: '#a0a060',
 };
 
-export default function SignalCard({ signal, score, lang }: Props) {
+export default function SignalCard({ signal, score, lang, agreeCount, totalCount }: Props) {
   const t = T[lang];
   const color = SIGNAL_COLOR[signal];
   const cfg = t.signal[signal];
@@ -35,15 +37,32 @@ export default function SignalCard({ signal, score, lang }: Props) {
       <div className="text-2xl font-bold mb-1" style={{ color, fontFamily: 'monospace' }}>
         {cfg.text}
       </div>
-      <div className="text-sm mb-3" style={{ color: '#8899aa', fontFamily: 'monospace' }}>
+      <div className="text-sm mb-4" style={{ color: '#8899aa', fontFamily: 'monospace' }}>
         — {cfg.sub}
       </div>
-      <div
-        className="inline-block rounded px-3 py-1 text-sm"
-        style={{ background: '#0a0e1a', color: '#8899aa', fontFamily: 'monospace' }}
-      >
-        {t.scoreLabel}:{' '}
-        <span style={{ color }}>{score > 0 ? '+' : ''}{score.toFixed(2)}</span>
+
+      {/* Confidence row */}
+      <div className="flex items-center justify-center gap-3 flex-wrap">
+        {signal !== 'neutral' && totalCount > 0 && (
+          <div
+            className="rounded px-3 py-1 text-sm"
+            style={{ background: '#0a0e1a', fontFamily: 'monospace' }}
+          >
+            <span style={{ color }}>
+              {agreeCount}
+            </span>
+            <span style={{ color: '#8899aa' }}>
+              {' '}{lang === 'ru' ? `из ${totalCount} индикаторов согласны` : `of ${totalCount} indicators agree`}
+            </span>
+          </div>
+        )}
+        <div
+          className="rounded px-3 py-1 text-sm"
+          style={{ background: '#0a0e1a', color: '#8899aa', fontFamily: 'monospace' }}
+        >
+          {t.scoreLabel}:{' '}
+          <span style={{ color }}>{score > 0 ? '+' : ''}{score.toFixed(2)}</span>
+        </div>
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import {
   Candle, Direction, SignalResult,
-  RawTrend, RawMomentum, RawWicks, RawVolatility, RawPattern, RawEma,
+  RawTrend, RawMomentum, RawWicks, RawVolatility, RawPattern, RawEma, RawRSI, RawVolume,
   DivergenceResult,
 } from './types';
 
@@ -101,25 +101,109 @@ function calcEma(candles: Candle[]): { score: number; raw: RawEma; direction: Di
   return { score: isBull ? 0.8 : -0.8, raw: { ema9, ema21, isBull }, direction: isBull ? 'bull' : 'bear' };
 }
 
+// Wilder's RSI(14) — proper smoothed calculation
+function calcRSI(candles: Candle[], period = 14): { score: number; raw: RawRSI; direction: Direction } {
+  if (candles.length < period + 2) {
+    return { score: 0, raw: { value: 50, label: 'neutral' }, direction: 'neutral' };
+  }
+
+  const prices = candles.map(c => c.c);
+  const changes: number[] = [];
+  for (let i = 1; i < prices.length; i++) {
+    changes.push(prices[i] - prices[i - 1]);
+  }
+
+  // Seed with simple average of first period
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 0; i < period; i++) {
+    if (changes[i] > 0) avgGain += changes[i];
+    else avgLoss -= changes[i];
+  }
+  avgGain /= period;
+  avgLoss /= period;
+
+  // Wilder smoothing for remaining changes
+  for (let i = period; i < changes.length; i++) {
+    const gain = changes[i] > 0 ? changes[i] : 0;
+    const loss = changes[i] < 0 ? -changes[i] : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
+
+  const rsiVal = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  const value = Math.round(rsiVal);
+
+  let label: RawRSI['label'];
+  let score: number;
+  let direction: Direction;
+
+  if (rsiVal >= 70) {
+    label = 'overbought'; score = -1.0; direction = 'bear';
+  } else if (rsiVal >= 60) {
+    label = 'overbought'; score = -0.5; direction = 'bear';
+  } else if (rsiVal <= 30) {
+    label = 'oversold'; score = 1.0; direction = 'bull';
+  } else if (rsiVal <= 40) {
+    label = 'oversold'; score = 0.5; direction = 'bull';
+  } else {
+    label = 'neutral'; score = 0; direction = 'neutral';
+  }
+
+  return { score, raw: { value, label }, direction };
+}
+
+// Volume vs 10-candle average — high volume confirms direction, low volume weakens it
+function calcVolume(candles: Candle[]): { score: number; raw: RawVolume | null; direction: Direction } {
+  if (candles.length < 11) {
+    return { score: 0, raw: null, direction: 'neutral' };
+  }
+
+  const last = candles[candles.length - 1];
+  const prev10 = candles.slice(-11, -1);
+  const avgVol = prev10.reduce((s, c) => s + c.v, 0) / 10;
+  const ratio = avgVol > 0 ? last.v / avgVol : 1;
+  const isBull = last.c > last.o;
+
+  let score: number;
+  let direction: Direction;
+
+  if (ratio >= 1.5) {
+    // High volume confirms current candle direction
+    score = isBull ? 0.8 : -0.8;
+    direction = isBull ? 'bull' : 'bear';
+  } else if (ratio <= 0.7) {
+    // Low volume — weak move, don't amplify
+    score = 0;
+    direction = 'neutral';
+  } else {
+    // Normal volume — mild confirmation
+    score = isBull ? 0.3 : -0.3;
+    direction = isBull ? 'bull' : 'bear';
+  }
+
+  return { score, raw: { ratio: parseFloat(ratio.toFixed(2)), isBull }, direction };
+}
+
 let prevSignal: Direction | null = null;
-const THRESHOLD = 1.2;
+const THRESHOLD  = 1.2;
 const NOISE_GUARD = 0.4;
 
 export function analyze(candles: Candle[]): SignalResult {
-  if (candles.length < 21) {
-    return {
-      score: 0,
-      signal: 'neutral',
-      signals: {
-        trend:      { raw: null, direction: 'neutral' },
-        momentum:   { raw: null, direction: 'neutral' },
-        wicks:      { raw: null, direction: 'neutral' },
-        volatility: { raw: null, direction: 'neutral' },
-        pattern:    { raw: null, direction: 'neutral' },
-        ema:        { raw: null, direction: 'neutral' },
-      },
-    };
-  }
+  const neutral: SignalResult = {
+    score: 0, signal: 'neutral', agreeCount: 0, totalCount: 0,
+    signals: {
+      trend:      { raw: null, direction: 'neutral' },
+      momentum:   { raw: null, direction: 'neutral' },
+      wicks:      { raw: null, direction: 'neutral' },
+      volatility: { raw: null, direction: 'neutral' },
+      pattern:    { raw: null, direction: 'neutral' },
+      ema:        { raw: null, direction: 'neutral' },
+      rsi:        { raw: null, direction: 'neutral' },
+      volume:     { raw: null, direction: 'neutral' },
+    },
+  };
+
+  if (candles.length < 21) return neutral;
 
   const trend      = calcTrend(candles);
   const momentum   = calcMomentum(candles);
@@ -127,21 +211,34 @@ export function analyze(candles: Candle[]): SignalResult {
   const volatility = calcVolatility(candles);
   const pattern    = calcPattern(candles);
   const emaResult  = calcEma(candles);
+  const rsiResult  = calcRSI(candles);
+  const volResult  = calcVolume(candles);
 
-  const rawScore = trend.score + momentum.score + wicks.score + pattern.score + emaResult.score;
+  const rawScore =
+    trend.score + momentum.score + wicks.score +
+    pattern.score + emaResult.score + rsiResult.score + volResult.score;
 
   let signal: Direction =
     Math.abs(rawScore) < THRESHOLD ? 'neutral' : rawScore > 0 ? 'bull' : 'bear';
 
-  // Anti-noise guard: prevent rapid flipping near the threshold
   if (prevSignal !== null && Math.abs(rawScore) < THRESHOLD + NOISE_GUARD) {
     signal = prevSignal;
   }
   prevSignal = signal;
 
+  // Count directional agreement (exclude volatility — always neutral)
+  const directional = [trend, momentum, wicks, pattern, emaResult, rsiResult, volResult];
+  const withOpinion = directional.filter(s => s.direction !== 'neutral');
+  const agreeCount  = signal !== 'neutral'
+    ? withOpinion.filter(s => s.direction === signal).length
+    : 0;
+  const totalCount  = withOpinion.length;
+
   return {
     score: rawScore,
     signal,
+    agreeCount,
+    totalCount,
     signals: {
       trend:      { raw: trend.raw,      direction: trend.direction },
       momentum:   { raw: momentum.raw,   direction: momentum.direction },
@@ -149,6 +246,8 @@ export function analyze(candles: Candle[]): SignalResult {
       volatility: { raw: volatility.raw, direction: 'neutral' },
       pattern:    { raw: pattern.raw,    direction: pattern.direction },
       ema:        { raw: emaResult.raw,  direction: emaResult.direction },
+      rsi:        { raw: rsiResult.raw,  direction: rsiResult.direction },
+      volume:     { raw: volResult.raw,  direction: volResult.direction },
     },
   };
 }

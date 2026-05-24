@@ -2,11 +2,12 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import dynamic from 'next/dynamic';
-import { Candle, PolymarketData, Lang, Interval } from '@/lib/types';
+import { Candle, PolymarketData, Lang, Interval, Direction, SignalResult, SignalHistoryEntry } from '@/lib/types';
 import { analyze, analyzeDivergence } from '@/lib/analyzer';
 import { T } from '@/lib/i18n';
 import SignalCard from '@/components/SignalCard';
 import SignalGrid from '@/components/SignalGrid';
+import SignalHistory from '@/components/SignalHistory';
 import PolymarketBar from '@/components/PolymarketBar';
 import DivergenceBox from '@/components/DivergenceBox';
 import PriceDisplay from '@/components/PriceDisplay';
@@ -74,6 +75,91 @@ async function fetchPolyDirect(slug: string): Promise<PolyResult | null> {
     if (isNaN(up) || isNaN(down) || up < 0.02 || up > 0.98) return null;
     return { up, down };
   } catch { return null; }
+}
+
+// ── Signal history (localStorage, 1 entry per closed candle) ─────────────
+
+function useSignalHistory(
+  interval: Interval,
+  analysis: SignalResult | null,
+  candles: Candle[],
+): SignalHistoryEntry[] {
+  const [history, setHistory] = useState<SignalHistoryEntry[]>([]);
+  const prevCandleTimeRef = useRef<number>(0);
+  const signalRef         = useRef<Direction | null>(null);
+  const pendingRef        = useRef<{ time: number; signal: Direction; price: number } | null>(null);
+  const prevIntervalRef   = useRef<Interval>(interval);
+
+  // Load history for current interval from localStorage on mount
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(`sh_${interval}`);
+      setHistory(stored ? (JSON.parse(stored) as SignalHistoryEntry[]) : []);
+    } catch { setHistory([]); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // Interval changed — reset state and reload history
+    if (interval !== prevIntervalRef.current) {
+      prevIntervalRef.current  = interval;
+      prevCandleTimeRef.current = 0;
+      signalRef.current        = null;
+      pendingRef.current       = null;
+      try {
+        const stored = localStorage.getItem(`sh_${interval}`);
+        setHistory(stored ? (JSON.parse(stored) as SignalHistoryEntry[]) : []);
+      } catch { setHistory([]); }
+      return;
+    }
+
+    if (!analysis || candles.length < 2) return;
+    const currentCandle = candles[candles.length - 1];
+    const prevCandle    = candles[candles.length - 2];
+
+    if (prevCandleTimeRef.current === 0) {
+      // First tick after load — just initialise refs, nothing to record yet
+      prevCandleTimeRef.current = currentCandle.t;
+      signalRef.current         = analysis.signal;
+      return;
+    }
+
+    if (currentCandle.t !== prevCandleTimeRef.current) {
+      // A new candle just opened → prevCandle is now fully closed
+
+      // 1. Finalise any pending entry (prevCandle is its outcome candle)
+      if (pendingRef.current) {
+        const { time, signal } = pendingRef.current;
+        const move    = prevCandle.c - prevCandle.o;
+        const correct = signal === 'bull' ? move > 0 : move < 0;
+        const entry: SignalHistoryEntry = {
+          candleTime:   prevCandle.t,
+          signal,
+          priceAtOpen:  prevCandle.o,
+          priceAtClose: prevCandle.c,
+          correct,
+          interval,
+        };
+        void time; // used in pendingRef only for bookkeeping
+        setHistory(prev => {
+          const updated = [entry, ...prev].slice(0, 20);
+          try { localStorage.setItem(`sh_${interval}`, JSON.stringify(updated)); } catch { /* quota */ }
+          return updated;
+        });
+        pendingRef.current = null;
+      }
+
+      // 2. Queue the signal active at prevCandle close as the prediction for the next candle
+      if (signalRef.current && signalRef.current !== 'neutral') {
+        pendingRef.current = { time: prevCandle.t, signal: signalRef.current, price: prevCandle.c };
+      }
+    }
+
+    prevCandleTimeRef.current = currentCandle.t;
+    signalRef.current         = analysis.signal;
+  }, [candles, analysis, interval]);
+
+  return history;
 }
 
 // ── Binance WebSocket + Polymarket polling ────────────────────────────────
@@ -230,6 +316,7 @@ export default function Home() {
   const [lang, toggleLang]       = useLang();
   const [interval, setIntervalMode] = useIntervalMode();
   const { candles, polymarket, analysis, loading, connected } = useMarketData(interval);
+  const signalHistory = useSignalHistory(interval, analysis, candles);
   const t = T[lang];
 
   // Clock — independent 1-second tick, not bound to WebSocket frequency
@@ -340,7 +427,13 @@ export default function Home() {
 
         {/* Signal card */}
         {analysis ? (
-          <SignalCard signal={analysis.signal} score={analysis.score} lang={lang} />
+          <SignalCard
+            signal={analysis.signal}
+            score={analysis.score}
+            lang={lang}
+            agreeCount={analysis.agreeCount}
+            totalCount={analysis.totalCount}
+          />
         ) : (
           <div className="rounded-xl p-8 text-center" style={{ background: '#0f1726', border: '1px solid #1e2d4a', color: '#8899aa' }}>
             {t.loading}
@@ -371,6 +464,9 @@ export default function Home() {
 
         {/* Signals grid */}
         {analysis && <SignalGrid signals={analysis.signals} lang={lang} />}
+
+        {/* Signal history */}
+        <SignalHistory history={signalHistory} interval={interval} lang={lang} />
 
         {/* Polymarket */}
         <PolymarketBar data={polymarket} lang={lang} />

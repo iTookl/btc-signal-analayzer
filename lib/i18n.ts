@@ -1,6 +1,6 @@
 import {
   Lang, SignalResult, Direction,
-  RawTrend, RawMomentum, RawWicks, RawVolatility, RawPattern, RawEma,
+  RawTrend, RawMomentum, RawWicks, RawVolatility, RawPattern, RawEma, RawRSI, RawVolume,
   DivergenceResult,
 } from './types';
 
@@ -22,15 +22,19 @@ interface Translations {
   chartLabel: (interval: string) => string;
   footer: string;
   insufficientData: string;
+  agreeLabel: (agree: number, total: number) => string;
+  historyTitle: string;
   signal: Record<Direction, { text: string; sub: string }>;
   signalLabels: Record<keyof SignalResult['signals'], string>;
   dirIcon: Record<Direction, string>;
-  trend: (r: RawTrend) => string;
-  momentum: (r: RawMomentum) => string;
-  wicks: (r: RawWicks) => string;
+  trend:      (r: RawTrend) => string;
+  momentum:   (r: RawMomentum) => string;
+  wicks:      (r: RawWicks) => string;
   volatility: (r: RawVolatility) => string;
-  pattern: (r: RawPattern) => string;
-  ema: (r: RawEma) => string;
+  pattern:    (r: RawPattern) => string;
+  ema:        (r: RawEma) => string;
+  rsi:        (r: RawRSI) => string;
+  volume:     (r: RawVolume) => string;
   divergence: (d: DivergenceResult) => string;
   marketContext: (bull: number, bear: number, move: number, interval: string) => string;
 }
@@ -53,6 +57,8 @@ const EN: Translations = {
   chartLabel: (interval) => `BTCUSDT · ${interval} · last 30 candles`,
   footer: 'For analysis only. Not financial advice. TA is probabilistic, not deterministic. Polymarket 15m markets have low volume — odds can be noisy.',
   insufficientData: 'Insufficient data',
+  agreeLabel: (agree, total) => total > 0 ? `${agree} of ${total} indicators agree` : 'mixed signals',
+  historyTitle: 'SIGNAL HISTORY',
   signal: {
     bull:    { text: 'Bullish signal',  sub: 'bias toward growth'   },
     bear:    { text: 'Bearish signal',  sub: 'bias toward decline'  },
@@ -61,6 +67,7 @@ const EN: Translations = {
   signalLabels: {
     trend: 'Trend', momentum: 'Momentum', wicks: 'Wicks',
     volatility: 'Volatility', pattern: 'Pattern', ema: 'EMA 9/21',
+    rsi: 'RSI 14', volume: 'Volume',
   },
   dirIcon: { bull: '▲', bear: '▼', neutral: '◆' },
   trend:      (r) => `${r.up}↑ / ${r.down}↓ of ${r.total}`,
@@ -79,7 +86,16 @@ const EN: Translations = {
     normal: 'Normal',
     insufficient: 'Insufficient data',
   })[r.type],
-  ema:        (r) => `EMA9: ${r.ema9.toFixed(0)} / EMA21: ${r.ema21.toFixed(0)}`,
+  ema:    (r) => `EMA9: ${r.ema9.toFixed(0)} / EMA21: ${r.ema21.toFixed(0)}`,
+  rsi:    (r) => {
+    const lbl = r.label === 'overbought' ? 'Overbought' : r.label === 'oversold' ? 'Oversold' : 'Neutral';
+    return `${r.value} (${lbl})`;
+  },
+  volume: (r) => {
+    const vol = r.ratio >= 1.5 ? 'High' : r.ratio <= 0.7 ? 'Low' : 'Normal';
+    const dir = r.isBull ? 'bullish' : 'bearish';
+    return `${vol} ×${r.ratio.toFixed(1)} (${dir})`;
+  },
   divergence: (d) => {
     if (d.type === 'unavailable') return 'Polymarket data unavailable';
     const pct = d.upPct!;
@@ -116,6 +132,8 @@ const RU: Translations = {
   chartLabel: (interval) => `BTCUSDT · ${interval} · последние 30 свечей`,
   footer: 'Только для анализа. Не является финансовой рекомендацией. Технический анализ вероятностный, а не детерминированный. Polymarket 15m рынки имеют малый объём — котировки могут шуметь.',
   insufficientData: 'Недостаточно данных',
+  agreeLabel: (agree, total) => total > 0 ? `${agree} из ${total} индикаторов согласны` : 'смешанные сигналы',
+  historyTitle: 'ИСТОРИЯ СИГНАЛОВ',
   signal: {
     bull:    { text: 'Бычий сигнал',      sub: 'перевес в сторону роста'   },
     bear:    { text: 'Медвежий сигнал',    sub: 'перевес в сторону падения' },
@@ -124,6 +142,7 @@ const RU: Translations = {
   signalLabels: {
     trend: 'Тренд', momentum: 'Моментум', wicks: 'Тени',
     volatility: 'Волатильность', pattern: 'Паттерн', ema: 'EMA 9/21',
+    rsi: 'RSI 14', volume: 'Объём',
   },
   dirIcon: { bull: '▲', bear: '▼', neutral: '◆' },
   trend:      (r) => `${r.up}↑ / ${r.down}↓ из ${r.total}`,
@@ -142,7 +161,16 @@ const RU: Translations = {
     normal: 'Обычная',
     insufficient: 'Недостаточно данных',
   })[r.type],
-  ema:        (r) => `EMA9: ${r.ema9.toFixed(0)} / EMA21: ${r.ema21.toFixed(0)}`,
+  ema:    (r) => `EMA9: ${r.ema9.toFixed(0)} / EMA21: ${r.ema21.toFixed(0)}`,
+  rsi:    (r) => {
+    const lbl = r.label === 'overbought' ? 'Перекуплен' : r.label === 'oversold' ? 'Перепродан' : 'Нейтрал';
+    return `${r.value} (${lbl})`;
+  },
+  volume: (r) => {
+    const vol = r.ratio >= 1.5 ? 'Высокий' : r.ratio <= 0.7 ? 'Низкий' : 'Норма';
+    const dir = r.isBull ? 'бычий' : 'медвежий';
+    return `${vol} ×${r.ratio.toFixed(1)} (${dir})`;
+  },
   divergence: (d) => {
     if (d.type === 'unavailable') return 'Данные Polymarket недоступны';
     const pct = d.upPct!;
@@ -177,5 +205,7 @@ export function formatSignalValue(
     case 'volatility': return t.volatility(item.raw as RawVolatility);
     case 'pattern':    return t.pattern(item.raw as RawPattern);
     case 'ema':        return t.ema(item.raw as RawEma);
+    case 'rsi':        return t.rsi(item.raw as RawRSI);
+    case 'volume':     return t.volume(item.raw as RawVolume);
   }
 }

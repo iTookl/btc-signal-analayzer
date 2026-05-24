@@ -1,0 +1,73 @@
+'use client';
+
+import { SignalHistoryEntry, Lang, Interval } from '@/lib/types';
+import { T } from '@/lib/i18n';
+
+interface Props {
+  history: SignalHistoryEntry[];
+  interval: Interval;
+  lang: Lang;
+}
+
+export default function SignalHistory({ history, interval, lang }: Props) {
+  if (history.length === 0) return null;
+
+  const correct = history.filter(e => e.correct).length;
+  const winPct  = Math.round((correct / history.length) * 100);
+  const winColor = winPct >= 60 ? '#3d9e6e' : winPct >= 50 ? '#a0a060' : '#e05050';
+
+  return (
+    <div className="rounded-xl p-4" style={{ background: '#0f1726', border: '1px solid #1e2d4a' }}>
+      {/* Header */}
+      <div
+        className="flex items-center justify-between text-xs mb-3"
+        style={{ color: '#8899aa', fontFamily: 'monospace', letterSpacing: '0.05em' }}
+      >
+        <span>{T[lang].historyTitle} · {interval.toUpperCase()}</span>
+        <span style={{ color: winColor }}>
+          {correct}/{history.length} ({winPct}%)
+        </span>
+      </div>
+
+      {/* Entries */}
+      <div className="space-y-1">
+        {history.slice(0, 10).map((entry) => {
+          const time = new Date(entry.candleTime).toLocaleTimeString([], {
+            hour: '2-digit', minute: '2-digit', hour12: false,
+          });
+          const move     = entry.priceAtClose - entry.priceAtOpen;
+          const moveAbs  = Math.abs(Math.round(move)).toLocaleString('en-US');
+          const moveStr  = (move >= 0 ? '+$' : '-$') + moveAbs;
+          const sigColor = entry.signal === 'bull' ? '#3d9e6e' : '#e05050';
+          const mvColor  = move >= 0 ? '#3d9e6e' : '#e05050';
+          const okColor  = entry.correct ? '#3d9e6e' : '#e05050';
+
+          return (
+            <div
+              key={entry.candleTime}
+              className="flex items-center gap-3 text-xs"
+              style={{ fontFamily: 'monospace' }}
+            >
+              <span style={{ color: '#8899aa', minWidth: 36 }}>{time}</span>
+              <span style={{ color: sigColor, minWidth: 10 }}>
+                {entry.signal === 'bull' ? '▲' : '▼'}
+              </span>
+              <span style={{ color: mvColor, flex: 1 }}>{moveStr}</span>
+              <span style={{ color: okColor, fontWeight: 'bold' }}>
+                {entry.correct ? '✓' : '✗'}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {history.length < 3 && (
+        <div className="text-xs mt-2" style={{ color: '#4a5a6a', fontFamily: 'monospace' }}>
+          {lang === 'ru'
+            ? 'История накапливается с каждой закрытой свечой'
+            : 'History builds with each closed candle'}
+        </div>
+      )}
+    </div>
+  );
+}
