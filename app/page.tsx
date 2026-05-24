@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import dynamic from 'next/dynamic';
-import { Candle, PolymarketData, Lang } from '@/lib/types';
+import { Candle, PolymarketData, Lang, Interval } from '@/lib/types';
 import { analyze, analyzeDivergence } from '@/lib/analyzer';
 import { T } from '@/lib/i18n';
 import SignalCard from '@/components/SignalCard';
@@ -31,66 +31,107 @@ function useLang(): [Lang, () => void] {
   return [lang, toggle];
 }
 
+// ── Interval persistence ──────────────────────────────────────────────────
+
+function useIntervalMode(): [Interval, (v: Interval) => void] {
+  const [interval, setIntervalState] = useState<Interval>('15m');
+  useEffect(() => {
+    const s = localStorage.getItem('interval') as Interval | null;
+    if (s === '5m' || s === '15m') setIntervalState(s);
+  }, []);
+  const setInterval = useCallback((v: Interval) => {
+    localStorage.setItem('interval', v);
+    setIntervalState(v);
+  }, []);
+  return [interval, setInterval];
+}
+
+// ── Direct Polymarket browser polling helpers ─────────────────────────────
+
+interface PolyResult { up: number; down: number; }
+
+function getPolymarketSlugs(interval: Interval): string[] {
+  const step = interval === '5m' ? 300 : 900;
+  const now = Math.floor(Date.now() / 1000);
+  const next = Math.ceil(now / step) * step;
+  const prefix = `btc-updown-${interval}-`;
+  return [next, next + step, next - step, next + step * 2].map(ts => `${prefix}${ts}`);
+}
+
+async function fetchPolyDirect(slug: string): Promise<PolyResult | null> {
+  try {
+    const res = await fetch(`https://gamma-api.polymarket.com/events?slug=${slug}&limit=1`);
+    if (!res.ok) return null;
+    const events: Array<{
+      active?: boolean; closed?: boolean;
+      markets?: Array<{ outcomePrices?: string }>;
+    }> = await res.json();
+    const event = events?.[0];
+    if (!event?.markets?.length || event.closed === true || event.active === false) return null;
+    const prices: string[] = JSON.parse(event.markets[0].outcomePrices ?? '[]');
+    const up   = parseFloat(prices[0]);
+    const down = parseFloat(prices[1]);
+    if (isNaN(up) || isNaN(down) || up < 0.02 || up > 0.98) return null;
+    return { up, down };
+  } catch { return null; }
+}
+
 // ── Binance WebSocket + Polymarket polling ────────────────────────────────
 
 interface BinanceKlineMsg {
   k: { t: number; o: string; h: string; l: string; c: string; v: string };
 }
 
-function useMarketData() {
+function useMarketData(interval: Interval) {
   const [candles,    setCandles]    = useState<Candle[]>([]);
   const [polymarket, setPolymarket] = useState<PolymarketData>({ up: null, down: null });
   const [loading,    setLoading]    = useState(true);
   const [connected,  setConnected]  = useState(false);
   const [lastTick,   setLastTick]   = useState<Date | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRef   = useRef<WebSocket | null>(null);
+  const slugRef = useRef<string | null>(null);
 
-  // Synchronous — no 1-render delay, so ghost candle appears on initial REST load
   const analysis = useMemo(() => candles.length > 0 ? analyze(candles) : null, [candles]);
 
-  // Initial REST fetch for candles + polymarket
+  // Candles REST fetch — re-runs when interval changes
   useEffect(() => {
+    setCandles([]);
+    setLoading(true);
+    let active = true;
+
     (async () => {
-      // Candles and polymarket fetched independently so one failure doesn't block the other
-      const candlesPromise = (async () => {
-        try {
-          const res = await fetch('/api/candles');
-          const data = await res.json();
-          if (Array.isArray(data)) { setCandles(data); return; }
-        } catch { /* fall through to client-side fetch */ }
+      try {
+        const res = await fetch(`/api/candles?interval=${interval}`);
+        const data = await res.json();
+        if (active && Array.isArray(data)) { setCandles(data); setLoading(false); return; }
+      } catch { /* fall through */ }
 
-        // Client-side fallback: Binance allows CORS from browsers
-        try {
-          const res = await fetch(
-            'https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=50'
-          );
-          const data: unknown[][] = await res.json();
-          setCandles(data.map(c => ({
-            t: c[0] as number, o: +(c[1] as string), h: +(c[2] as string),
-            l: +(c[3] as string), c: +(c[4] as string), v: +(c[5] as string),
-          })));
-        } catch { /* silent */ }
-      })();
+      // Client-side fallback
+      try {
+        const res = await fetch(
+          `https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=${interval}&limit=50`
+        );
+        const data: unknown[][] = await res.json();
+        if (active) setCandles(data.map(c => ({
+          t: c[0] as number, o: +(c[1] as string), h: +(c[2] as string),
+          l: +(c[3] as string), c: +(c[4] as string), v: +(c[5] as string),
+        })));
+      } catch { /* silent */ }
 
-      const polyPromise = (async () => {
-        try {
-          const res = await fetch('/api/polymarket');
-          const data = await res.json();
-          if (data && typeof data === 'object') setPolymarket(data);
-        } catch { /* silent */ }
-      })();
-
-      await Promise.allSettled([candlesPromise, polyPromise]);
-      setLoading(false);
+      if (active) setLoading(false);
     })();
-  }, []);
 
-  // Binance WebSocket — live kline stream
+    return () => { active = false; };
+  }, [interval]);
+
+  // Binance WebSocket — re-runs when interval changes
   useEffect(() => {
     let destroyed = false;
+    setConnected(false);
+
     const connect = () => {
       if (destroyed) return;
-      const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@kline_15m');
+      const ws = new WebSocket(`wss://stream.binance.com:9443/ws/btcusdt@kline_${interval}`);
       wsRef.current = ws;
       ws.onopen  = () => { if (!destroyed) setConnected(true); };
       ws.onclose = () => { if (!destroyed) { setConnected(false); setTimeout(connect, 3000); } };
@@ -112,16 +153,52 @@ function useMarketData() {
     };
     connect();
     return () => { destroyed = true; wsRef.current?.close(); };
-  }, []);
+  }, [interval]);
 
-  // Polymarket silent refresh every 60s
+  // Polymarket — direct browser polling every 1s, serverless fallback for slug discovery
   useEffect(() => {
-    const iv = setInterval(async () => {
-      try { setPolymarket(await (await fetch('/api/polymarket')).json()); }
-      catch { /* silent */ }
-    }, 60_000);
-    return () => clearInterval(iv);
-  }, []);
+    let destroyed = false;
+    slugRef.current = null;
+    setPolymarket({ up: null, down: null });
+
+    const poll = async () => {
+      if (destroyed) return;
+
+      if (!slugRef.current) {
+        // Try computing slug from time directly (no serverless needed)
+        for (const slug of getPolymarketSlugs(interval)) {
+          const result = await fetchPolyDirect(slug);
+          if (result) {
+            slugRef.current = slug;
+            if (!destroyed) setPolymarket(result);
+            return;
+          }
+        }
+        // All direct slugs failed — fall back to our serverless for slug discovery
+        try {
+          const res = await fetch(`/api/polymarket?interval=${interval}`);
+          const data: { up: number | null; down: number | null; slug?: string } = await res.json();
+          if (data.slug && data.up !== null && !destroyed) {
+            slugRef.current = data.slug;
+            setPolymarket({ up: data.up, down: data.down });
+          }
+        } catch { /* silent */ }
+        return;
+      }
+
+      // Known slug — poll directly
+      const result = await fetchPolyDirect(slugRef.current);
+      if (result) {
+        if (!destroyed) setPolymarket(result);
+      } else {
+        slugRef.current = null; // market expired, will re-discover next tick
+      }
+    };
+
+    poll();
+    const iv = setInterval(poll, 1000);
+    return () => { destroyed = true; clearInterval(iv); };
+  }, [interval]);
 
   return { candles, polymarket, analysis, loading, connected, lastTick };
 }
@@ -129,15 +206,13 @@ function useMarketData() {
 // ── Page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  const [lang, toggleLang] = useLang();
-  const { candles, polymarket, analysis, loading, connected, lastTick } = useMarketData();
+  const [lang, toggleLang]       = useLang();
+  const [interval, setIntervalMode] = useIntervalMode();
+  const { candles, polymarket, analysis, loading, connected, lastTick } = useMarketData(interval);
   const t = T[lang];
 
   const lastCandle = candles[candles.length - 1];
-
-  // $ change within the current 15m candle (open → live close from Binance WS)
   const candleChange = lastCandle ? lastCandle.c - lastCandle.o : null;
-
   const divergence = analysis ? analyzeDivergence(analysis.signal, polymarket.up) : null;
 
   // Last 5 complete candles (excluding the currently-forming one)
@@ -181,13 +256,33 @@ export default function Home() {
               </span>
             </div>
           </div>
-          <button
-            onClick={toggleLang}
-            className="px-4 py-2 rounded-lg text-sm font-bold"
-            style={{ background: '#0f1726', border: '1px solid #1e2d4a', color: '#8899aa', cursor: 'pointer' }}
-          >
-            {lang === 'ru' ? 'EN' : 'RU'}
-          </button>
+
+          {/* Controls */}
+          <div className="flex items-center gap-2">
+            {/* Interval selector */}
+            {(['5m', '15m'] as Interval[]).map(iv => (
+              <button
+                key={iv}
+                onClick={() => setIntervalMode(iv)}
+                className="px-3 py-2 rounded-lg text-sm font-bold"
+                style={{
+                  background: interval === iv ? '#1a2d1a' : '#0f1726',
+                  border: `1px solid ${interval === iv ? '#3d9e6e' : '#1e2d4a'}`,
+                  color: interval === iv ? '#3d9e6e' : '#8899aa',
+                  cursor: 'pointer',
+                }}
+              >
+                {iv.toUpperCase()}
+              </button>
+            ))}
+            <button
+              onClick={toggleLang}
+              className="px-4 py-2 rounded-lg text-sm font-bold"
+              style={{ background: '#0f1726', border: '1px solid #1e2d4a', color: '#8899aa', cursor: 'pointer' }}
+            >
+              {lang === 'ru' ? 'EN' : 'RU'}
+            </button>
+          </div>
         </div>
 
         {/* Stats row */}
@@ -213,7 +308,7 @@ export default function Home() {
           >
             <div className="text-xs mb-1" style={{ color: '#8899aa' }}>{t.candlesLabel}</div>
             <div className="text-lg font-bold" style={{ color: '#c8d8e8' }}>{candles.length}</div>
-            <div className="text-xs" style={{ color: '#8899aa' }}>{t.intervalLabel}</div>
+            <div className="text-xs" style={{ color: '#8899aa' }}>{interval} {t.intervalLabel}</div>
           </div>
         </div>
 
@@ -233,7 +328,7 @@ export default function Home() {
             style={{ background: '#0f1726', border: '1px solid #1e2d4a', color: '#8899aa', fontFamily: 'monospace' }}
           >
             <span style={{ color: marketCtx.bull >= 4 ? '#3d9e6e' : marketCtx.bear >= 4 ? '#e05050' : '#a0a060' }}>
-              {t.marketContext(marketCtx.bull, marketCtx.bear, marketCtx.move)}
+              {t.marketContext(marketCtx.bull, marketCtx.bear, marketCtx.move, interval)}
             </span>
           </div>
         )}
@@ -244,6 +339,7 @@ export default function Home() {
             candles={candles}
             signal={analysis?.signal ?? null}
             lang={lang}
+            interval={interval}
           />
         )}
 

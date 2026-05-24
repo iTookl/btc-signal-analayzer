@@ -2,20 +2,21 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { createChart, CandlestickSeries, IChartApi, ISeriesApi, Time, TickMarkType } from 'lightweight-charts';
-import { Candle, Direction, Lang } from '@/lib/types';
+import { Candle, Direction, Lang, Interval } from '@/lib/types';
 import { T } from '@/lib/i18n';
 
 interface Props {
   candles: Candle[];
   signal: Direction | null;
   lang: Lang;
+  interval: Interval;
 }
 
 function toBar(c: Candle) {
   return { time: Math.floor(c.t / 1000) as Time, open: c.o, high: c.h, low: c.l, close: c.c };
 }
 
-export default function CandleChart({ candles, signal, lang }: Props) {
+export default function CandleChart({ candles, signal, lang, interval }: Props) {
   const containerRef  = useRef<HTMLDivElement>(null);
   const chartRef      = useRef<IChartApi | null>(null);
   const seriesRef     = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -24,25 +25,27 @@ export default function CandleChart({ candles, signal, lang }: Props) {
   const ghostTimeRef  = useRef<number>(0);
   const ghostInitRef  = useRef(false);
 
-  // Candle close countdown
+  const INTERVAL_SECS = interval === '5m' ? 300 : 900;
+
+  // Candle close countdown — updates every second, resets when interval changes
   const [secsLeft, setSecsLeft] = useState(() => {
     const now = Math.floor(Date.now() / 1000);
-    return 900 - (now % 900);
+    return INTERVAL_SECS - (now % INTERVAL_SECS);
   });
   useEffect(() => {
-    const tick = () => {
+    const update = () => {
       const now = Math.floor(Date.now() / 1000);
-      setSecsLeft(900 - (now % 900));
+      setSecsLeft(INTERVAL_SECS - (now % INTERVAL_SECS));
     };
-    const id = setInterval(tick, 1000);
+    update(); // immediate on interval change
+    const id = setInterval(update, 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [INTERVAL_SECS]);
 
   // Create chart + two series on mount
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Convert UTC unix-seconds to local browser time string
     const fmtTime = (t: Time) => {
       const d = new Date((t as number) * 1000);
       return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -58,7 +61,7 @@ export default function CandleChart({ candles, signal, lang }: Props) {
         secondsVisible: false,
         tickMarkFormatter: (t: Time, type: TickMarkType) => {
           if (type === TickMarkType.Time || type === TickMarkType.TimeWithSeconds) return fmtTime(t);
-          return null; // default for day/month/year marks
+          return null;
         },
       },
       localization: { timeFormatter: fmtTime },
@@ -73,7 +76,6 @@ export default function CandleChart({ candles, signal, lang }: Props) {
       wickUpColor: '#3d9e6e', wickDownColor: '#e05050',
     });
 
-    // Ghost series: semi-transparent, no price line, no last-value label
     const ghost = chart.addSeries(CandlestickSeries, {
       upColor: '#3d9e6e55', downColor: '#3d9e6e55',
       borderUpColor: '#3d9e6e66', borderDownColor: '#3d9e6e66',
@@ -103,7 +105,7 @@ export default function CandleChart({ candles, signal, lang }: Props) {
     };
   }, []);
 
-  // Main candle update — uses series.update() for WS ticks to preserve zoom
+  // Main candle update
   useEffect(() => {
     const series = seriesRef.current;
     if (!series || candles.length === 0) return;
@@ -117,7 +119,7 @@ export default function CandleChart({ candles, signal, lang }: Props) {
     prevLenRef.current = candles.length;
   }, [candles]);
 
-  // Ghost candle — redrawn whenever signal or latest candle changes
+  // Ghost candle — uses INTERVAL_SECS for next-candle offset
   useEffect(() => {
     const ghost = ghostRef.current;
     if (!ghost || candles.length < 10) return;
@@ -139,35 +141,34 @@ export default function CandleChart({ candles, signal, lang }: Props) {
     const bodyLow    = Math.min(ghostOpen, ghostClose);
     const ghostHigh  = bodyHigh + avgRange * 0.2;
     const ghostLow   = bodyLow  - avgRange * 0.2;
-    const ghostTime  = (Math.floor(last.t / 1000) + 900) as Time;
+    const ghostTime  = (Math.floor(last.t / 1000) + INTERVAL_SECS) as Time;
 
     ghost.applyOptions({
-      upColor:        color + '55',
-      downColor:      color + '55',
-      borderUpColor:  color + '66',
+      upColor:         color + '55',
+      downColor:       color + '55',
+      borderUpColor:   color + '66',
       borderDownColor: color + '66',
-      wickUpColor:    color + '33',
-      wickDownColor:  color + '33',
+      wickUpColor:     color + '33',
+      wickDownColor:   color + '33',
     });
 
     ghost.setData([{ time: ghostTime, open: ghostOpen, high: ghostHigh, low: ghostLow, close: ghostClose }]);
 
-    // fitContent when ghost first appears, or when it jumps to a new 15m slot
     const t = Number(ghostTime);
     if (!ghostInitRef.current || t !== ghostTimeRef.current) {
       ghostInitRef.current = true;
       ghostTimeRef.current = t;
       chartRef.current?.timeScale().fitContent();
     }
-  }, [candles, signal]);
+  }, [candles, signal, INTERVAL_SECS]);
 
   const ghostLabel = signal && signal !== 'neutral'
     ? ` + ${signal === 'bull' ? '↑' : '↓'} ghost`
     : '';
 
-  const timerMins = Math.floor(secsLeft / 60);
-  const timerSecs = secsLeft % 60;
-  const timerStr  = `${String(timerMins).padStart(2, '0')}:${String(timerSecs).padStart(2, '0')}`;
+  const timerMins  = Math.floor(secsLeft / 60);
+  const timerSecs  = secsLeft % 60;
+  const timerStr   = `${String(timerMins).padStart(2, '0')}:${String(timerSecs).padStart(2, '0')}`;
   const timerColor = secsLeft <= 60 ? '#e05050' : '#8899aa';
 
   return (
@@ -177,7 +178,7 @@ export default function CandleChart({ candles, signal, lang }: Props) {
         style={{ color: '#8899aa', fontFamily: 'monospace', background: '#0f1726' }}
       >
         <span>
-          {T[lang].chartLabel}
+          {T[lang].chartLabel(interval)}
           {ghostLabel && (
             <span style={{ color: signal === 'bull' ? '#3d9e6e66' : '#e0505066', marginLeft: 8 }}>
               {ghostLabel}

@@ -1,8 +1,6 @@
-// Dynamically find the currently active Polymarket BTC 15m market.
-// Each market has slug: btc-updown-15m-{closeTimestamp}
-// where closeTimestamp is a Unix timestamp aligned to 15-minute boundaries (multiples of 900).
-//
-// All candidate slugs are fetched in parallel to stay within Vercel's 10s timeout.
+// Dynamically find the currently active Polymarket BTC Up/Down market.
+// Supports both 5m (300s boundaries) and 15m (900s boundaries).
+// Slug formats: btc-updown-5m-{ts} and btc-updown-15m-{ts}
 
 interface GammaMarket { outcomePrices?: string; }
 interface GammaEvent {
@@ -14,8 +12,7 @@ interface GammaEvent {
 
 interface MarketResult { up: number; down: number; slug: string; }
 
-async function fetchSlug(ts: number): Promise<MarketResult> {
-  const slug = `btc-updown-15m-${ts}`;
+async function fetchSlug(slug: string): Promise<MarketResult> {
   const res = await fetch(
     `https://gamma-api.polymarket.com/events?slug=${slug}&limit=1`,
     { next: { revalidate: 0 } }
@@ -39,28 +36,33 @@ async function fetchSlug(ts: number): Promise<MarketResult> {
   return { up, down, slug };
 }
 
-export async function GET() {
-  const now = Math.floor(Date.now() / 1000);
-  const nextBoundary = Math.ceil(now / 900) * 900;
-  const candidates = [nextBoundary, nextBoundary + 900, nextBoundary - 900, nextBoundary + 1800];
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const interval = searchParams.get('interval') === '5m' ? '5m' : '15m';
+  const step = interval === '5m' ? 300 : 900;
+  const prefix = `btc-updown-${interval}-`;
 
-  // Fetch all candidates in parallel — avoids sequential latency blowing the 10s Vercel timeout
+  const now = Math.floor(Date.now() / 1000);
+  const nextBoundary = Math.ceil(now / step) * step;
+  const candidates = [nextBoundary, nextBoundary + step, nextBoundary - step, nextBoundary + step * 2]
+    .map(ts => `${prefix}${ts}`);
+
   const settled = await Promise.allSettled(candidates.map(fetchSlug));
 
   for (const result of settled) {
     if (result.status === 'fulfilled') return Response.json(result.value);
   }
 
-  // Fallback: full-text search for any active BTC 15m event
+  // Fallback: full-text search for any active BTC Up/Down event of this interval
   try {
     const searchRes = await fetch(
-      'https://gamma-api.polymarket.com/events?q=BTC+up+or+down+15m&active=true&closed=false&limit=15',
+      `https://gamma-api.polymarket.com/events?q=BTC+up+or+down+${interval}&active=true&closed=false&limit=15`,
       { next: { revalidate: 0 } }
     );
     if (searchRes.ok) {
       const events: GammaEvent[] = await searchRes.json();
       for (const event of events) {
-        if (!event.slug?.includes('btc-updown-15m')) continue;
+        if (!event.slug?.includes(`btc-updown-${interval}-`)) continue;
         if (!event.markets?.length) continue;
         const market = event.markets[0];
         if (!market.outcomePrices) continue;

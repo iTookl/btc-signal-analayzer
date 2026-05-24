@@ -19,7 +19,7 @@ interface Translations {
   polyUnavailable: string;
   polyError: string;
   divTitle: string;
-  chartLabel: string;
+  chartLabel: (interval: string) => string;
   footer: string;
   insufficientData: string;
   signal: Record<Direction, { text: string; sub: string }>;
@@ -32,7 +32,7 @@ interface Translations {
   pattern: (r: RawPattern) => string;
   ema: (r: RawEma) => string;
   divergence: (d: DivergenceResult) => string;
-  marketContext: (bull: number, bear: number, move: number) => string;
+  marketContext: (bull: number, bear: number, move: number, interval: string) => string;
 }
 
 const EN: Translations = {
@@ -44,13 +44,13 @@ const EN: Translations = {
   priceSource: 'Binance',
   priceStale: 'stale',
   candlesLabel: 'CANDLES',
-  intervalLabel: '15m interval',
+  intervalLabel: 'interval',
   scoreLabel: 'Score',
   polyTitle: 'POLYMARKET ODDS',
   polyUnavailable: 'Data unavailable',
   polyError: 'Error',
   divTitle: 'DIVERGENCE ANALYSIS',
-  chartLabel: 'BTCUSDT · 15m · last 30 candles',
+  chartLabel: (interval) => `BTCUSDT · ${interval} · last 30 candles`,
   footer: 'For analysis only. Not financial advice. TA is probabilistic, not deterministic. Polymarket 15m markets have low volume — odds can be noisy.',
   insufficientData: 'Insufficient data',
   signal: {
@@ -88,12 +88,13 @@ const EN: Translations = {
     if (d.type === 'neutral') return `Uncertain. Polymarket: ${pct}% UP / ${100 - pct}% DOWN`;
     return `✓ Consensus confirmed — TA and market agree (${pct}% UP)`;
   },
-  marketContext: (bull, _bear, move) => {
+  marketContext: (bull, _bear, move, interval) => {
+    const duration = interval === '5m' ? '25m' : '1h 15m';
     const sign = move >= 0 ? '+' : '−';
     const amt = '$' + Math.abs(Math.round(move)).toLocaleString('en-US');
-    if (bull >= 4) return `Rising trend — ${bull}/5 candles bullish (${sign}${amt} over 1h 15m)`;
-    if (bull <= 1) return `Falling trend — ${5 - bull}/5 candles bearish (${sign}${amt} over 1h 15m)`;
-    return `Sideways — ${bull} bullish / ${5 - bull} bearish (${sign}${amt} over 1h 15m)`;
+    if (bull >= 4) return `Rising trend — ${bull}/5 candles bullish (${sign}${amt} over ${duration})`;
+    if (bull <= 1) return `Falling trend — ${5 - bull}/5 candles bearish (${sign}${amt} over ${duration})`;
+    return `Sideways — ${bull} bullish / ${5 - bull} bearish (${sign}${amt} over ${duration})`;
   },
 };
 
@@ -106,13 +107,13 @@ const RU: Translations = {
   priceSource: 'Binance',
   priceStale: 'устарело',
   candlesLabel: 'СВЕЧЕЙ',
-  intervalLabel: '15m интервал',
+  intervalLabel: 'интервал',
   scoreLabel: 'Счёт',
   polyTitle: 'POLYMARKET ODDS',
   polyUnavailable: 'Данные недоступны',
   polyError: 'Ошибка',
   divTitle: 'АНАЛИЗ РАСХОЖДЕНИЙ',
-  chartLabel: 'BTCUSDT · 15m · последние 30 свечей',
+  chartLabel: (interval) => `BTCUSDT · ${interval} · последние 30 свечей`,
   footer: 'Только для анализа. Не является финансовой рекомендацией. Технический анализ вероятностный, а не детерминированный. Polymarket 15m рынки имеют малый объём — котировки могут шуметь.',
   insufficientData: 'Недостаточно данных',
   signal: {
@@ -150,12 +151,13 @@ const RU: Translations = {
     if (d.type === 'neutral') return `Неопределённость. Polymarket: ${pct}% UP / ${100 - pct}% DOWN`;
     return `✓ Консенсус подтверждён — ТА и рынок согласны (${pct}% UP)`;
   },
-  marketContext: (bull, _bear, move) => {
+  marketContext: (bull, _bear, move, interval) => {
+    const duration = interval === '5m' ? '25м' : '1ч 15м';
     const sign = move >= 0 ? '+' : '−';
     const amt = '$' + Math.abs(Math.round(move)).toLocaleString('ru-RU');
-    if (bull >= 4) return `Восходящий тренд — ${bull}/5 свечей бычьи (${sign}${amt} за 1ч 15м)`;
-    if (bull <= 1) return `Нисходящий тренд — ${5 - bull}/5 свечей медвежьи (${sign}${amt} за 1ч 15м)`;
-    return `Боковик — ${bull} бычьих / ${5 - bull} медвежьих (${sign}${amt} за 1ч 15м)`;
+    if (bull >= 4) return `Восходящий тренд — ${bull}/5 свечей бычьи (${sign}${amt} за ${duration})`;
+    if (bull <= 1) return `Нисходящий тренд — ${5 - bull}/5 свечей медвежьи (${sign}${amt} за ${duration})`;
+    return `Боковик — ${bull} бычьих / ${5 - bull} медвежьих (${sign}${amt} за ${duration})`;
   },
 };
 

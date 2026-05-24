@@ -6,9 +6,12 @@ const BASES = [
   'https://api2.binance.com',
   'https://api3.binance.com',
 ];
-const PATH = '/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=50';
 
-export async function GET() {
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const interval = searchParams.get('interval') === '5m' ? '5m' : '15m';
+  const PATH = `/api/v3/klines?symbol=BTCUSDT&interval=${interval}&limit=50`;
+
   const attempts = BASES.map(base =>
     fetch(`${base}${PATH}`, { next: { revalidate: 0 } })
       .then(async res => {

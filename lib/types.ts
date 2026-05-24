@@ -9,6 +9,7 @@ export interface Candle {
 
 export type Direction = 'bull' | 'bear' | 'neutral';
 export type Lang = 'en' | 'ru';
+export type Interval = '5m' | '15m';
 
 export type VolatilityLabel = 'high' | 'squeeze' | 'normal';
 export type PatternType = 'bull_engulf' | 'bear_engulf' | 'doji' | 'normal' | 'insufficient';
