@@ -221,7 +221,15 @@ export function analyze(candles: Candle[]): SignalResult {
   let signal: Direction =
     Math.abs(rawScore) < THRESHOLD ? 'neutral' : rawScore > 0 ? 'bull' : 'bear';
 
-  if (prevSignal !== null && Math.abs(rawScore) < THRESHOLD + NOISE_GUARD) {
+  // Noise guard: only prevents a directional signal from dropping to neutral
+  // when score dips slightly below threshold (anti-whipsaw).
+  // Never overrides a signal that already cleared the threshold.
+  if (
+    prevSignal !== null &&
+    prevSignal !== 'neutral' &&
+    signal === 'neutral' &&
+    Math.abs(rawScore) > THRESHOLD - NOISE_GUARD
+  ) {
     signal = prevSignal;
   }
   prevSignal = signal;
