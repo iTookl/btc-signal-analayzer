@@ -28,8 +28,11 @@ export default function SignalGrid({ signals, lang }: Props) {
             className="rounded-lg p-3"
             style={{ background: '#0f1726', border: '1px solid #1e2d4a' }}
           >
-            <div className="text-xs mb-1" style={{ color: '#8899aa', fontFamily: 'monospace' }}>
+            <div className="text-xs font-bold mb-0.5" style={{ color: '#8899aa', fontFamily: 'monospace' }}>
               {t.signalLabels[key]}
+            </div>
+            <div className="mb-2" style={{ color: '#4a5a6a', fontFamily: 'monospace', fontSize: '10px', lineHeight: '1.4' }}>
+              {t.signalDescriptions[key]}
             </div>
             <div
               className="text-sm font-semibold flex items-center gap-1"

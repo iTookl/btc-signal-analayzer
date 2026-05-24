@@ -26,6 +26,7 @@ interface Translations {
   historyTitle: string;
   signal: Record<Direction, { text: string; sub: string }>;
   signalLabels: Record<keyof SignalResult['signals'], string>;
+  signalDescriptions: Record<keyof SignalResult['signals'], string>;
   dirIcon: Record<Direction, string>;
   trend:      (r: RawTrend) => string;
   momentum:   (r: RawMomentum) => string;
@@ -68,6 +69,16 @@ const EN: Translations = {
     trend: 'Trend', momentum: 'Momentum', wicks: 'Wicks',
     volatility: 'Volatility', pattern: 'Pattern', ema: 'EMA 9/21',
     rsi: 'RSI 14', volume: 'Volume',
+  },
+  signalDescriptions: {
+    trend:      'Last 8 candles: how many went up vs down',
+    momentum:   'Is the current candle body bigger or smaller than usual?',
+    wicks:      'Long lower wick = buyers resisted; long upper = sellers pushed back',
+    volatility: 'Is this candle more or less active than normal?',
+    pattern:    'Looks for reversal signals (engulfing candle, doji)',
+    ema:        'If the fast average is above the slow one — trend is up, and vice versa',
+    rsi:        'Momentum 0–100: above 70 = overheated, below 30 = oversold',
+    volume:     'How much BTC was traded vs the last 10 candles average',
   },
   dirIcon: { bull: '▲', bear: '▼', neutral: '◆' },
   trend: (r) => {
@@ -163,6 +174,16 @@ const RU: Translations = {
     trend: 'Тренд', momentum: 'Моментум', wicks: 'Тени',
     volatility: 'Волатильность', pattern: 'Паттерн', ema: 'EMA 9/21',
     rsi: 'RSI 14', volume: 'Объём',
+  },
+  signalDescriptions: {
+    trend:      'Последние 8 свечей: сколько выросло, сколько упало',
+    momentum:   'Тело текущей свечи больше или меньше обычного?',
+    wicks:      'Длинный нижний хвост = покупатели держали; верхний = продавцы давили',
+    volatility: 'Текущая свеча активнее или тише нормального уровня?',
+    pattern:    'Ищет сигналы разворота: поглощение, доджи',
+    ema:        'Если быстрая средняя выше медленной — тренд вверх, и наоборот',
+    rsi:        'Индикатор 0–100: выше 70 = рынок перегрет, ниже 30 = перепродан',
+    volume:     'Сколько BTC торговалось vs среднее за последние 10 свечей',
   },
   dirIcon: { bull: '▲', bear: '▼', neutral: '◆' },
   trend: (r) => {
