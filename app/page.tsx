@@ -51,19 +51,37 @@ function useMarketData() {
   // Initial REST fetch for candles + polymarket
   useEffect(() => {
     (async () => {
-      try {
-        const [cr, pr] = await Promise.all([
-          fetch('/api/candles'),
-          fetch('/api/polymarket'),
-        ]);
-        const candlesData = await cr.json();
-        if (Array.isArray(candlesData)) setCandles(candlesData);
+      // Candles and polymarket fetched independently so one failure doesn't block the other
+      const candlesPromise = (async () => {
+        try {
+          const res = await fetch('/api/candles');
+          const data = await res.json();
+          if (Array.isArray(data)) { setCandles(data); return; }
+        } catch { /* fall through to client-side fetch */ }
 
-        const polyData = await pr.json();
-        if (polyData && typeof polyData === 'object') setPolymarket(polyData);
-      } finally {
-        setLoading(false);
-      }
+        // Client-side fallback: Binance allows CORS from browsers
+        try {
+          const res = await fetch(
+            'https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=50'
+          );
+          const data: unknown[][] = await res.json();
+          setCandles(data.map(c => ({
+            t: c[0] as number, o: +(c[1] as string), h: +(c[2] as string),
+            l: +(c[3] as string), c: +(c[4] as string), v: +(c[5] as string),
+          })));
+        } catch { /* silent */ }
+      })();
+
+      const polyPromise = (async () => {
+        try {
+          const res = await fetch('/api/polymarket');
+          const data = await res.json();
+          if (data && typeof data === 'object') setPolymarket(data);
+        } catch { /* silent */ }
+      })();
+
+      await Promise.allSettled([candlesPromise, polyPromise]);
+      setLoading(false);
     })();
   }, []);
 
