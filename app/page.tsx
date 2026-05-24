@@ -56,8 +56,11 @@ function useMarketData() {
           fetch('/api/candles'),
           fetch('/api/polymarket'),
         ]);
-        setCandles(await cr.json());
-        setPolymarket(await pr.json());
+        const candlesData = await cr.json();
+        if (Array.isArray(candlesData)) setCandles(candlesData);
+
+        const polyData = await pr.json();
+        if (polyData && typeof polyData === 'object') setPolymarket(polyData);
       } finally {
         setLoading(false);
       }
@@ -121,7 +124,7 @@ export default function Home() {
 
   // Last 5 complete candles (excluding the currently-forming one)
   const marketCtx = useMemo(() => {
-    if (candles.length < 6) return null;
+    if (!Array.isArray(candles) || candles.length < 6) return null;
     const slice = candles.slice(-6, -1);
     const bull = slice.filter(c => c.c > c.o).length;
     const move = slice[slice.length - 1].c - slice[0].o;
