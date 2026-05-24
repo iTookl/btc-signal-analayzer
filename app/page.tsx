@@ -87,7 +87,6 @@ function useMarketData(interval: Interval) {
   const [polymarket, setPolymarket] = useState<PolymarketData>({ up: null, down: null });
   const [loading,    setLoading]    = useState(true);
   const [connected,  setConnected]  = useState(false);
-  const [lastTick,   setLastTick]   = useState<Date | null>(null);
   const wsRef   = useRef<WebSocket | null>(null);
   const slugRef = useRef<string | null>(null);
 
@@ -148,7 +147,6 @@ function useMarketData(interval: Interval) {
           else { updated.push(tick); if (updated.length > 50) updated.shift(); }
           return updated;
         });
-        setLastTick(new Date());
       };
     };
     connect();
@@ -200,7 +198,30 @@ function useMarketData(interval: Interval) {
     return () => { destroyed = true; clearInterval(iv); };
   }, [interval]);
 
-  return { candles, polymarket, analysis, loading, connected, lastTick };
+  // 1-second price ticker — guarantees price refreshes every second even in quiet markets
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const res = await fetch('https://data-api.binance.vision/api/v3/ticker/price?symbol=BTCUSDT');
+        const data: { price: string } = await res.json();
+        const price = parseFloat(data.price);
+        if (isNaN(price) || !active) return;
+        setCandles(prev => {
+          if (!prev.length) return prev;
+          const last = prev[prev.length - 1];
+          if (last.c === price) return prev; // no change, skip re-render
+          const updated = [...prev];
+          updated[updated.length - 1] = { ...last, c: price };
+          return updated;
+        });
+      } catch { /* silent */ }
+    };
+    const iv = setInterval(poll, 1000);
+    return () => { active = false; clearInterval(iv); };
+  }, []);
+
+  return { candles, polymarket, analysis, loading, connected };
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────
@@ -208,8 +229,17 @@ function useMarketData(interval: Interval) {
 export default function Home() {
   const [lang, toggleLang]       = useLang();
   const [interval, setIntervalMode] = useIntervalMode();
-  const { candles, polymarket, analysis, loading, connected, lastTick } = useMarketData(interval);
+  const { candles, polymarket, analysis, loading, connected } = useMarketData(interval);
   const t = T[lang];
+
+  // Clock — independent 1-second tick, not bound to WebSocket frequency
+  const [clockStr, setClockStr] = useState('—');
+  useEffect(() => {
+    const fmt = () => new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setClockStr(fmt());
+    const id = setInterval(() => setClockStr(fmt()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const lastCandle = candles[candles.length - 1];
   const candleChange = lastCandle ? lastCandle.c - lastCandle.o : null;
@@ -223,10 +253,6 @@ export default function Home() {
     const move = slice[slice.length - 1].c - slice[0].o;
     return { bull, bear: 5 - bull, move };
   }, [candles]);
-
-  const tickStr = lastTick
-    ? lastTick.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    : '—';
 
   return (
     <main className="min-h-screen" style={{ background: '#0a0e1a', color: '#c8d8e8', fontFamily: 'monospace' }}>
@@ -251,8 +277,8 @@ export default function Home() {
                 {loading
                   ? t.loading
                   : connected
-                  ? `${t.liveStatus} · ${tickStr}`
-                  : `${t.updatedAt} ${tickStr}`}
+                  ? `${t.liveStatus} · ${clockStr}`
+                  : `${t.updatedAt} ${clockStr}`}
               </span>
             </div>
           </div>
