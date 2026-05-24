@@ -90,26 +90,36 @@ function useSignalHistory(
   const pendingRef        = useRef<{ time: number; signal: Direction; price: number } | null>(null);
   const prevIntervalRef   = useRef<Interval>(interval);
 
-  // Load history for current interval from localStorage on mount
+  function loadHistory(iv: Interval) {
+    fetch(`/api/history?interval=${iv}`)
+      .then(r => r.json())
+      .then((data: unknown) => {
+        if (Array.isArray(data)) setHistory(data as SignalHistoryEntry[]);
+      })
+      .catch(() => {
+        // Redis not configured — fall back to localStorage
+        try {
+          const stored = localStorage.getItem(`sh_${iv}`);
+          setHistory(stored ? (JSON.parse(stored) as SignalHistoryEntry[]) : []);
+        } catch { setHistory([]); }
+      });
+  }
+
+  // Load from server on mount
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(`sh_${interval}`);
-      setHistory(stored ? (JSON.parse(stored) as SignalHistoryEntry[]) : []);
-    } catch { setHistory([]); }
+    loadHistory(interval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    // Interval changed — reset state and reload history
+    // Interval changed — reset and reload from server
     if (interval !== prevIntervalRef.current) {
       prevIntervalRef.current  = interval;
       prevCandleTimeRef.current = 0;
       signalRef.current        = null;
       pendingRef.current       = null;
-      try {
-        const stored = localStorage.getItem(`sh_${interval}`);
-        setHistory(stored ? (JSON.parse(stored) as SignalHistoryEntry[]) : []);
-      } catch { setHistory([]); }
+      setHistory([]);
+      loadHistory(interval);
       return;
     }
 
@@ -142,9 +152,9 @@ function useSignalHistory(
         };
         void time; // used in pendingRef only for bookkeeping
         setHistory(prev => {
-          const updated = [entry, ...prev].slice(0, 20);
-          try { localStorage.setItem(`sh_${interval}`, JSON.stringify(updated)); } catch { /* quota */ }
-          return updated;
+          // Dedup: server cron may have already added this candle
+          if (prev.some(e => e.candleTime === entry.candleTime)) return prev;
+          return [entry, ...prev].slice(0, 100);
         });
         pendingRef.current = null;
       }
