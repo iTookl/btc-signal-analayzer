@@ -234,13 +234,12 @@ export function analyze(candles: Candle[]): SignalResult {
   }
   prevSignal = signal;
 
-  // Count directional agreement (exclude volatility — always neutral)
+  // Count directional agreement across all 7 indicators (exclude volatility — always neutral)
   const directional = [trend, momentum, wicks, pattern, emaResult, rsiResult, volResult];
-  const withOpinion = directional.filter(s => s.direction !== 'neutral');
   const agreeCount  = signal !== 'neutral'
-    ? withOpinion.filter(s => s.direction === signal).length
+    ? directional.filter(s => s.direction === signal).length
     : 0;
-  const totalCount  = withOpinion.length;
+  const totalCount  = directional.length;
 
   return {
     score: rawScore,
