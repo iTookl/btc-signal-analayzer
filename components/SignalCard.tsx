@@ -1,6 +1,6 @@
 'use client';
 
-import { Direction, Lang } from '@/lib/types';
+import { Direction, Lang, NeutralReason } from '@/lib/types';
 import { T } from '@/lib/i18n';
 
 interface Props {
@@ -9,6 +9,7 @@ interface Props {
   lang: Lang;
   agreeCount: number;
   totalCount: number;
+  neutralReason: NeutralReason;
 }
 
 const SIGNAL_COLOR: Record<Direction, string> = {
@@ -17,10 +18,19 @@ const SIGNAL_COLOR: Record<Direction, string> = {
   neutral: '#a0a060',
 };
 
-export default function SignalCard({ signal, score, lang, agreeCount, totalCount }: Props) {
+export default function SignalCard({ signal, score, lang, agreeCount, totalCount, neutralReason }: Props) {
   const t = T[lang];
   const color = SIGNAL_COLOR[signal];
   const cfg = t.signal[signal];
+
+  const neutralHint =
+    signal === 'neutral' && neutralReason === 'no_data'
+      ? (lang === 'ru' ? 'Загрузка данных...' : 'Loading data...')
+      : signal === 'neutral' && neutralReason === 'low_agreement'
+      ? (lang === 'ru' ? `Мало согласия: ${agreeCount} из ${totalCount}` : `Low agreement: ${agreeCount} of ${totalCount}`)
+      : signal === 'neutral'
+      ? (lang === 'ru' ? 'Счёт ниже порога' : 'Score below threshold')
+      : null;
 
   return (
     <div
@@ -37,9 +47,14 @@ export default function SignalCard({ signal, score, lang, agreeCount, totalCount
       <div className="text-2xl font-bold mb-1" style={{ color, fontFamily: 'monospace' }}>
         {cfg.text}
       </div>
-      <div className="text-sm mb-4" style={{ color: '#8899aa', fontFamily: 'monospace' }}>
+      <div className="text-sm mb-1" style={{ color: '#8899aa', fontFamily: 'monospace' }}>
         — {cfg.sub}
       </div>
+      {neutralHint && (
+        <div className="text-xs mb-3" style={{ color: '#4a5a6a', fontFamily: 'monospace' }}>
+          {neutralHint}
+        </div>
+      )}
 
       {/* Confidence row */}
       <div className="flex items-center justify-center gap-3 flex-wrap">

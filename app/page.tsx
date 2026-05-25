@@ -83,6 +83,7 @@ function useSignalHistory(
   interval: Interval,
   analysis: SignalResult | null,
   candles: Candle[],
+  connected: boolean,
 ): SignalHistoryEntry[] {
   const [history, setHistory] = useState<SignalHistoryEntry[]>([]);
   const prevCandleTimeRef = useRef<number>(0);
@@ -110,6 +111,16 @@ function useSignalHistory(
     loadHistory(interval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Reload history when WebSocket reconnects (may have missed candles while offline)
+  const prevConnectedRef = useRef(false);
+  useEffect(() => {
+    if (connected && !prevConnectedRef.current) {
+      loadHistory(interval);
+    }
+    prevConnectedRef.current = connected;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected]);
 
   useEffect(() => {
     // Interval changed — reset and reload from server
@@ -318,7 +329,7 @@ function useMarketData(interval: Interval) {
     return () => { active = false; clearInterval(iv); };
   }, []);
 
-  return { candles, polymarket, analysis, loading, connected };
+  return { candles, polymarket, analysis, loading, connected, interval };
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────
@@ -327,7 +338,7 @@ export default function Home() {
   const [lang, toggleLang]       = useLang();
   const [interval, setIntervalMode] = useIntervalMode();
   const { candles, polymarket, analysis, loading, connected } = useMarketData(interval);
-  const signalHistory = useSignalHistory(interval, analysis, candles);
+  const signalHistory = useSignalHistory(interval, analysis, candles, connected);
   const t = T[lang];
 
   // Clock — independent 1-second tick, not bound to WebSocket frequency
@@ -444,6 +455,7 @@ export default function Home() {
             lang={lang}
             agreeCount={analysis.agreeCount}
             totalCount={analysis.totalCount}
+            neutralReason={analysis.neutralReason}
           />
         ) : (
           <div className="rounded-xl p-8 text-center" style={{ background: '#0f1726', border: '1px solid #1e2d4a', color: '#8899aa' }}>

@@ -1,5 +1,5 @@
 import {
-  Candle, Direction, SignalResult,
+  Candle, Direction, SignalResult, NeutralReason,
   RawTrend, RawMomentum, RawWicks, RawVolatility, RawPattern, RawEma, RawRSI, RawVolume,
   DivergenceResult,
 } from './types';
@@ -191,6 +191,7 @@ const NOISE_GUARD = 0.4;
 export function analyze(candles: Candle[]): SignalResult {
   const neutral: SignalResult = {
     score: 0, signal: 'neutral', agreeCount: 0, totalCount: 0,
+    neutralReason: 'no_data',
     signals: {
       trend:      { raw: null, direction: 'neutral' },
       momentum:   { raw: null, direction: 'neutral' },
@@ -241,11 +242,22 @@ export function analyze(candles: Candle[]): SignalResult {
     : 0;
   const totalCount  = directional.length;
 
+  // Require at least 4/7 indicators to agree — below this threshold signal is too noisy
+  const MIN_AGREE = 4;
+  let neutralReason: NeutralReason = null;
+  if (signal === 'neutral') {
+    neutralReason = agreeCount < MIN_AGREE ? 'low_agreement' : 'low_score';
+  } else if (agreeCount < MIN_AGREE) {
+    signal = 'neutral';
+    neutralReason = 'low_agreement';
+  }
+
   return {
     score: rawScore,
     signal,
     agreeCount,
     totalCount,
+    neutralReason,
     signals: {
       trend:      { raw: trend.raw,      direction: trend.direction },
       momentum:   { raw: momentum.raw,   direction: momentum.direction },

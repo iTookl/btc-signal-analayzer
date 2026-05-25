@@ -32,11 +32,14 @@ export interface SignalItem<T extends AnyRaw = AnyRaw> {
   direction: Direction;
 }
 
+export type NeutralReason = 'low_score' | 'low_agreement' | 'no_data' | null;
+
 export interface SignalResult {
   score: number;
   signal: Direction;
   agreeCount: number;
   totalCount: number;
+  neutralReason: NeutralReason;
   signals: {
     trend:      SignalItem<RawTrend | null>;
     momentum:   SignalItem<RawMomentum | null>;
