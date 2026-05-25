@@ -48,10 +48,11 @@ async function recordInterval(interval: Interval, redis: Redis): Promise<void> {
   if (existing.some(e => e.candleTime === outcomeCandle.t)) return;
 
   const analysis = analyze(predCandles);
-  if (analysis.signal === 'neutral') return;
-
-  const move    = outcomeCandle.c - outcomeCandle.o;
-  const correct = analysis.signal === 'bull' ? move > 0 : move < 0;
+  const move     = outcomeCandle.c - outcomeCandle.o;
+  // neutral = no directional prediction; mark as incorrect so it doesn't inflate win rate
+  const correct  = analysis.signal === 'neutral'
+    ? false
+    : analysis.signal === 'bull' ? move > 0 : move < 0;
 
   const entry: SignalHistoryEntry = {
     candleTime:   outcomeCandle.t,

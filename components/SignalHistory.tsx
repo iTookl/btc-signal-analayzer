@@ -10,10 +10,12 @@ interface Props {
 }
 
 export default function SignalHistory({ history, interval, lang }: Props) {
-  const isEmpty  = history.length === 0;
-  const correct  = history.filter(e => e.correct).length;
-  const winPct   = isEmpty ? null : Math.round((correct / history.length) * 100);
-  const winColor = winPct === null ? '#4a5a6a' : winPct >= 60 ? '#3d9e6e' : winPct >= 50 ? '#a0a060' : '#e05050';
+  const isEmpty      = history.length === 0;
+  // Win rate counts only directional (bull/bear) entries, not neutral ones
+  const directional  = history.filter(e => e.signal !== 'neutral');
+  const correct      = directional.filter(e => e.correct).length;
+  const winPct       = directional.length === 0 ? null : Math.round((correct / directional.length) * 100);
+  const winColor     = winPct === null ? '#4a5a6a' : winPct >= 60 ? '#3d9e6e' : winPct >= 50 ? '#a0a060' : '#e05050';
 
   return (
     <div className="rounded-xl p-4" style={{ background: '#0f1726', border: '1px solid #1e2d4a' }}>
@@ -24,7 +26,7 @@ export default function SignalHistory({ history, interval, lang }: Props) {
       >
         <span>{T[lang].historyTitle} · {interval.toUpperCase()}</span>
         <span style={{ color: winColor }}>
-          {winPct === null ? '—' : `${correct}/${history.length} (${winPct}%)`}
+          {winPct === null ? '—' : `${correct}/${directional.length} (${winPct}%)`}
         </span>
       </div>
 
@@ -46,9 +48,10 @@ export default function SignalHistory({ history, interval, lang }: Props) {
           const move     = entry.priceAtClose - entry.priceAtOpen;
           const moveAbs  = Math.abs(Math.round(move)).toLocaleString('en-US');
           const moveStr  = (move >= 0 ? '+$' : '-$') + moveAbs;
-          const sigColor = entry.signal === 'bull' ? '#3d9e6e' : '#e05050';
-          const mvColor  = move >= 0 ? '#3d9e6e' : '#e05050';
-          const okColor  = entry.correct ? '#3d9e6e' : '#e05050';
+          const isNeutral = entry.signal === 'neutral';
+          const sigColor  = entry.signal === 'bull' ? '#3d9e6e' : isNeutral ? '#a0a060' : '#e05050';
+          const mvColor   = move >= 0 ? '#3d9e6e' : '#e05050';
+          const okColor   = isNeutral ? '#4a5a6a' : entry.correct ? '#3d9e6e' : '#e05050';
 
           return (
             <div
@@ -58,11 +61,11 @@ export default function SignalHistory({ history, interval, lang }: Props) {
             >
               <span style={{ color: '#8899aa', minWidth: 36 }}>{time}</span>
               <span style={{ color: sigColor, minWidth: 10 }}>
-                {entry.signal === 'bull' ? '▲' : '▼'}
+                {isNeutral ? '—' : entry.signal === 'bull' ? '▲' : '▼'}
               </span>
               <span style={{ color: mvColor, flex: 1 }}>{moveStr}</span>
               <span style={{ color: okColor, fontWeight: 'bold' }}>
-                {entry.correct ? '✓' : '✗'}
+                {isNeutral ? '·' : entry.correct ? '✓' : '✗'}
               </span>
             </div>
           );
