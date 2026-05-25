@@ -66,9 +66,17 @@ async function recordInterval(interval: Interval, redis: Redis): Promise<void> {
   await redis.set(key, updated);
 }
 
+export async function GET(): Promise<Response> {
+  return Response.json({
+    cron_secret_set: !!process.env.CRON_SECRET,
+    redis_set: !!(process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL),
+  });
+}
+
 export async function POST(request: Request): Promise<Response> {
-  const secret = request.headers.get('x-cron-secret');
-  if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
+  const secret = (request.headers.get('x-cron-secret') ?? '').trim();
+  const expected = (process.env.CRON_SECRET ?? '').trim();
+  if (!expected || secret !== expected) {
     return Response.json({ error: 'unauthorized' }, { status: 401 });
   }
 
