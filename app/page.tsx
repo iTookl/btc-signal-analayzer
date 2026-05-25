@@ -294,26 +294,27 @@ function useMarketData(interval: Interval) {
     return () => { destroyed = true; clearInterval(iv); };
   }, [interval]);
 
-  // 1-second price ticker — guarantees price refreshes every second even in quiet markets
+  // Chainlink price — same oracle Polymarket uses for resolution, updates ~every 27s on Polygon
   useEffect(() => {
     let active = true;
     const poll = async () => {
       try {
-        const res = await fetch('https://data-api.binance.vision/api/v3/ticker/price?symbol=BTCUSDT');
-        const data: { price: string } = await res.json();
-        const price = parseFloat(data.price);
-        if (isNaN(price) || !active) return;
+        const res = await fetch('/api/chainlink');
+        const data: { price: number | null } = await res.json();
+        const price = data.price;
+        if (!price || isNaN(price) || !active) return;
         setCandles(prev => {
           if (!prev.length) return prev;
           const last = prev[prev.length - 1];
-          if (last.c === price) return prev; // no change, skip re-render
+          if (last.c === price) return prev;
           const updated = [...prev];
           updated[updated.length - 1] = { ...last, c: price };
           return updated;
         });
       } catch { /* silent */ }
     };
-    const iv = setInterval(poll, 1000);
+    poll();
+    const iv = setInterval(poll, 30_000);
     return () => { active = false; clearInterval(iv); };
   }, []);
 
