@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { Candle, PolymarketData, Lang, Interval, Direction, SignalResult, SignalHistoryEntry } from '@/lib/types';
 import { analyze, analyzeDivergence } from '@/lib/analyzer';
 import { T } from '@/lib/i18n';
-import SignalCard from '@/components/SignalCard';
+import SignalCard, { TradeMode } from '@/components/SignalCard';
 import SignalGrid from '@/components/SignalGrid';
 import SignalHistory from '@/components/SignalHistory';
 import PolymarketBar from '@/components/PolymarketBar';
@@ -45,6 +45,38 @@ function useIntervalMode(): [Interval, (v: Interval) => void] {
     setIntervalState(v);
   }, []);
   return [interval, setInterval];
+}
+
+// ── Trade mode persistence ────────────────────────────────────────────────
+
+function useTradeMode(): [TradeMode, (v: TradeMode) => void] {
+  const [mode, setModeState] = useState<TradeMode>('safe');
+  useEffect(() => {
+    const s = localStorage.getItem('tradeMode') as TradeMode | null;
+    if (s === 'safe' || s === 'aggressive' || s === 'degen') setModeState(s);
+  }, []);
+  const setMode = useCallback((v: TradeMode) => {
+    localStorage.setItem('tradeMode', v);
+    setModeState(v);
+  }, []);
+  return [mode, setMode];
+}
+
+// ── Window countdown ──────────────────────────────────────────────────────
+
+function useWindowCountdown(interval: Interval): number {
+  const [sec, setSec] = useState(0);
+  useEffect(() => {
+    const step = interval === '5m' ? 300 : 900;
+    const tick = () => {
+      const now = Math.floor(Date.now() / 1000);
+      setSec(step - (now % step));
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [interval]);
+  return sec;
 }
 
 // ── Direct Polymarket browser polling helpers ─────────────────────────────
@@ -98,7 +130,6 @@ function useSignalHistory(
         if (Array.isArray(data)) setHistory(data as SignalHistoryEntry[]);
       })
       .catch(() => {
-        // Redis not configured — fall back to localStorage
         try {
           const stored = localStorage.getItem(`sh_${iv}`);
           setHistory(stored ? (JSON.parse(stored) as SignalHistoryEntry[]) : []);
@@ -106,24 +137,19 @@ function useSignalHistory(
       });
   }
 
-  // Load from server on mount
   useEffect(() => {
     loadHistory(interval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reload history when WebSocket reconnects (may have missed candles while offline)
   const prevConnectedRef = useRef(false);
   useEffect(() => {
-    if (connected && !prevConnectedRef.current) {
-      loadHistory(interval);
-    }
+    if (connected && !prevConnectedRef.current) loadHistory(interval);
     prevConnectedRef.current = connected;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
 
   useEffect(() => {
-    // Interval changed — reset and reload from server
     if (interval !== prevIntervalRef.current) {
       prevIntervalRef.current  = interval;
       prevCandleTimeRef.current = 0;
@@ -139,16 +165,12 @@ function useSignalHistory(
     const prevCandle    = candles[candles.length - 2];
 
     if (prevCandleTimeRef.current === 0) {
-      // First tick after load — just initialise refs, nothing to record yet
       prevCandleTimeRef.current = currentCandle.t;
       signalRef.current         = analysis.signal;
       return;
     }
 
     if (currentCandle.t !== prevCandleTimeRef.current) {
-      // A new candle just opened → prevCandle is now fully closed
-
-      // 1. Finalise any pending entry (prevCandle is its outcome candle)
       if (pendingRef.current) {
         const { time, signal } = pendingRef.current;
         const move    = prevCandle.c - prevCandle.o;
@@ -161,16 +183,14 @@ function useSignalHistory(
           correct,
           interval,
         };
-        void time; // used in pendingRef only for bookkeeping
+        void time;
         setHistory(prev => {
-          // Dedup: server cron may have already added this candle
           if (prev.some(e => e.candleTime === entry.candleTime)) return prev;
           return [entry, ...prev].slice(0, 100);
         });
         pendingRef.current = null;
       }
 
-      // 2. Queue the signal active at prevCandle close as the prediction for the next candle
       if (signalRef.current && signalRef.current !== 'neutral') {
         pendingRef.current = { time: prevCandle.t, signal: signalRef.current, price: prevCandle.c };
       }
@@ -189,19 +209,32 @@ interface BinanceKlineMsg {
   k: { t: number; o: string; h: string; l: string; c: string; v: string };
 }
 
+const MAX_TICKS = 30;
+
 function useMarketData(interval: Interval) {
   const [candles,    setCandles]    = useState<Candle[]>([]);
+  const [ticks,      setTicks]      = useState<number[]>([]);
   const [polymarket, setPolymarket] = useState<PolymarketData>({ up: null, down: null });
   const [loading,    setLoading]    = useState(true);
   const [connected,  setConnected]  = useState(false);
-  const wsRef   = useRef<WebSocket | null>(null);
-  const slugRef = useRef<string | null>(null);
 
-  const analysis = useMemo(() => candles.length > 0 ? analyze(candles) : null, [candles]);
+  const wsRef             = useRef<WebSocket | null>(null);
+  const slugRef           = useRef<string | null>(null);
+  const chainlinkPriceRef = useRef<number | null>(null);
+  const candlesRef        = useRef<Candle[]>([]);
+
+  // Keep ref in sync so the 2s tick interval can read current price without stale closure
+  useEffect(() => { candlesRef.current = candles; }, [candles]);
+
+  const analysis = useMemo(
+    () => candles.length > 0 ? analyze(candles, ticks) : null,
+    [candles, ticks],
+  );
 
   // Candles REST fetch — re-runs when interval changes
   useEffect(() => {
     setCandles([]);
+    setTicks([]);
     setLoading(true);
     let active = true;
 
@@ -212,7 +245,6 @@ function useMarketData(interval: Interval) {
         if (active && Array.isArray(data)) { setCandles(data); setLoading(false); return; }
       } catch { /* fall through */ }
 
-      // Client-side fallback
       try {
         const res = await fetch(
           `https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=${interval}&limit=50`
@@ -245,7 +277,8 @@ function useMarketData(interval: Interval) {
       ws.onmessage = (e: MessageEvent) => {
         const msg: BinanceKlineMsg = JSON.parse(e.data as string);
         const k = msg.k;
-        const tick: Candle = { t: k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v };
+        const closePrice = chainlinkPriceRef.current ?? +k.c;
+        const tick: Candle = { t: k.t, o: +k.o, h: +k.h, l: +k.l, c: closePrice, v: +k.v };
         setCandles(prev => {
           if (!prev.length) return prev;
           const updated = [...prev];
@@ -260,7 +293,22 @@ function useMarketData(interval: Interval) {
     return () => { destroyed = true; wsRef.current?.close(); };
   }, [interval]);
 
-  // Polymarket — direct browser polling every 1s, serverless fallback for slug discovery
+  // 2-second tick accumulator — pushes current candle close price for tick trend
+  useEffect(() => {
+    setTicks([]);
+    const id = setInterval(() => {
+      const cur = candlesRef.current;
+      if (!cur.length) return;
+      const price = cur[cur.length - 1].c;
+      setTicks(prev => {
+        const next = [...prev, price];
+        return next.length > MAX_TICKS ? next.slice(-MAX_TICKS) : next;
+      });
+    }, 2000);
+    return () => clearInterval(id);
+  }, [interval]);
+
+  // Polymarket — direct browser polling every 1s
   useEffect(() => {
     let destroyed = false;
     slugRef.current = null;
@@ -270,7 +318,6 @@ function useMarketData(interval: Interval) {
       if (destroyed) return;
 
       if (!slugRef.current) {
-        // Try computing slug from time directly (no serverless needed)
         for (const slug of getPolymarketSlugs(interval)) {
           const result = await fetchPolyDirect(slug);
           if (result) {
@@ -279,7 +326,6 @@ function useMarketData(interval: Interval) {
             return;
           }
         }
-        // All direct slugs failed — fall back to our serverless for slug discovery
         try {
           const res = await fetch(`/api/polymarket?interval=${interval}`);
           const data: { up: number | null; down: number | null; slug?: string } = await res.json();
@@ -291,12 +337,11 @@ function useMarketData(interval: Interval) {
         return;
       }
 
-      // Known slug — poll directly
       const result = await fetchPolyDirect(slugRef.current);
       if (result) {
         if (!destroyed) setPolymarket(result);
       } else {
-        slugRef.current = null; // market expired, will re-discover next tick
+        slugRef.current = null;
       }
     };
 
@@ -305,7 +350,7 @@ function useMarketData(interval: Interval) {
     return () => { destroyed = true; clearInterval(iv); };
   }, [interval]);
 
-  // Chainlink price — same oracle Polymarket uses for resolution, updates ~every 27s on Polygon
+  // Chainlink price — Polymarket oracle, updates ~every 27s on Polygon
   useEffect(() => {
     let active = true;
     const poll = async () => {
@@ -314,6 +359,7 @@ function useMarketData(interval: Interval) {
         const data: { price: number | null } = await res.json();
         const price = data.price;
         if (!price || isNaN(price) || !active) return;
+        chainlinkPriceRef.current = price;
         setCandles(prev => {
           if (!prev.length) return prev;
           const last = prev[prev.length - 1];
@@ -329,19 +375,29 @@ function useMarketData(interval: Interval) {
     return () => { active = false; clearInterval(iv); };
   }, []);
 
-  return { candles, polymarket, analysis, loading, connected, interval };
+  return { candles, ticks, polymarket, analysis, loading, connected };
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────
 
+const MODE_COLORS: Record<TradeMode, string> = {
+  safe:       '#3d9e6e',
+  aggressive: '#a0a060',
+  degen:      '#e05050',
+};
+
 export default function Home() {
-  const [lang, toggleLang]       = useLang();
+  const [lang, toggleLang]          = useLang();
   const [interval, setIntervalMode] = useIntervalMode();
-  const { candles, polymarket, analysis, loading, connected } = useMarketData(interval);
+  const [mode, setMode]             = useTradeMode();
+  const { candles, ticks, polymarket, analysis, loading, connected } = useMarketData(interval);
   const signalHistory = useSignalHistory(interval, analysis, candles, connected);
+  const windowSec     = useWindowCountdown(interval);
   const t = T[lang];
 
-  // Clock — independent 1-second tick, not bound to WebSocket frequency
+  const isSnipeWindow = windowSec <= 10 && windowSec > 0;
+
+  // Clock
   const [clockStr, setClockStr] = useState('—');
   useEffect(() => {
     const fmt = () => new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -350,11 +406,10 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
-  const lastCandle = candles[candles.length - 1];
+  const lastCandle   = candles[candles.length - 1];
   const candleChange = lastCandle ? lastCandle.c - lastCandle.o : null;
-  const divergence = analysis ? analyzeDivergence(analysis.signal, polymarket.up) : null;
+  const divergence   = analysis ? analyzeDivergence(analysis.signal, polymarket.up) : null;
 
-  // Last 5 complete candles (excluding the currently-forming one)
   const marketCtx = useMemo(() => {
     if (!Array.isArray(candles) || candles.length < 6) return null;
     const slice = candles.slice(-6, -1);
@@ -383,17 +438,30 @@ export default function Home() {
                 }}
               />
               <span className="text-xs" style={{ color: '#8899aa' }}>
-                {loading
-                  ? t.loading
-                  : connected
-                  ? `${t.liveStatus} · ${clockStr}`
-                  : `${t.updatedAt} ${clockStr}`}
+                {loading ? t.loading : connected ? `${t.liveStatus} · ${clockStr}` : `${t.updatedAt} ${clockStr}`}
               </span>
             </div>
           </div>
 
           {/* Controls */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Trade mode selector */}
+            {(['safe', 'aggressive', 'degen'] as TradeMode[]).map(m => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className="px-2 py-1 rounded text-xs font-bold"
+                style={{
+                  background: mode === m ? `${MODE_COLORS[m]}22` : '#0f1726',
+                  border: `1px solid ${mode === m ? MODE_COLORS[m] : '#1e2d4a'}`,
+                  color: mode === m ? MODE_COLORS[m] : '#4a5a6a',
+                  cursor: 'pointer',
+                }}
+              >
+                {m === 'safe' ? t.modeSafe : m === 'aggressive' ? t.modeAggressive : t.modeDegen}
+              </button>
+            ))}
+
             {/* Interval selector */}
             {(['5m', '15m'] as Interval[]).map(iv => (
               <button
@@ -420,7 +488,7 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Stats row */}
+        {/* Stats row: price | window countdown */}
         <div className="grid grid-cols-2 gap-3">
           <div
             className="rounded-xl p-3 text-center"
@@ -439,11 +507,28 @@ export default function Home() {
 
           <div
             className="rounded-xl p-3 text-center"
-            style={{ background: '#0f1726', border: '1px solid #1e2d4a' }}
+            style={{
+              background: isSnipeWindow ? '#1a1000' : '#0f1726',
+              border: `1px solid ${isSnipeWindow ? '#e08020' : '#1e2d4a'}`,
+              boxShadow: isSnipeWindow ? '0 0 12px #e0802033' : 'none',
+              transition: 'all 0.3s',
+            }}
           >
-            <div className="text-xs mb-1" style={{ color: '#8899aa' }}>{t.candlesLabel}</div>
-            <div className="text-lg font-bold" style={{ color: '#c8d8e8' }}>{candles.length}</div>
-            <div className="text-xs" style={{ color: '#8899aa' }}>{interval} {t.intervalLabel}</div>
+            <div className="text-xs mb-1" style={{ color: isSnipeWindow ? '#e08020' : '#8899aa' }}>
+              {isSnipeWindow ? t.snipeLabel : (lang === 'ru' ? 'ДО ЗАКРЫТИЯ' : 'WINDOW CLOSE')}
+            </div>
+            <div
+              className="text-2xl font-bold"
+              style={{
+                color: isSnipeWindow ? '#e08020' : windowSec <= 30 ? '#a0a060' : '#c8d8e8',
+                fontFamily: 'monospace',
+              }}
+            >
+              {t.windowCountdown(windowSec)}
+            </div>
+            <div className="text-xs mt-1" style={{ color: '#4a5a6a' }}>
+              {ticks.length > 0 ? `${ticks.length} ticks` : interval}
+            </div>
           </div>
         </div>
 
@@ -452,10 +537,12 @@ export default function Home() {
           <SignalCard
             signal={analysis.signal}
             score={analysis.score}
+            confidence={analysis.confidence}
             lang={lang}
             agreeCount={analysis.agreeCount}
             totalCount={analysis.totalCount}
             neutralReason={analysis.neutralReason}
+            mode={mode}
           />
         ) : (
           <div className="rounded-xl p-8 text-center" style={{ background: '#0f1726', border: '1px solid #1e2d4a', color: '#8899aa' }}>
@@ -463,7 +550,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Market context — last 5 complete candles */}
+        {/* Market context */}
         {marketCtx && (
           <div
             className="px-4 py-3 rounded-xl text-sm"
@@ -475,7 +562,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Candle chart with ghost candle */}
+        {/* Candle chart */}
         {candles.length > 0 && (
           <CandleChart
             candles={candles}

@@ -11,44 +11,40 @@ export type Direction = 'bull' | 'bear' | 'neutral';
 export type Lang = 'en' | 'ru';
 export type Interval = '5m' | '15m';
 
-export type VolatilityLabel = 'high' | 'squeeze' | 'normal';
-export type PatternType = 'bull_engulf' | 'bear_engulf' | 'doji' | 'normal' | 'insufficient';
-
-export interface RawTrend      { up: number; down: number; total: number; }
-export interface RawMomentum   { isBull: boolean; isStrong: boolean; }
-export interface RawWicks      { upperPct: number; lowerPct: number; }
-export interface RawVolatility { label: VolatilityLabel; ratio: number; }
-export interface RawPattern    { type: PatternType; }
-export interface RawEma        { ema9: number; ema21: number; isBull: boolean; }
-export interface RawRSI        { value: number; label: 'overbought' | 'neutral' | 'oversold'; }
-export interface RawVolume     { ratio: number; isBull: boolean; }
+export interface RawWindowDelta { pct: number; weight: number; isBull: boolean; }
+export interface RawMicroMomentum { bull1: boolean; bull2: boolean; }
+export interface RawAcceleration { currentBody: number; prevBody: number; ratio: number; isBull: boolean; }
+export interface RawEma { ema9: number; ema21: number; isBull: boolean; }
+export interface RawRSI { value: number; label: 'overbought' | 'neutral' | 'oversold'; }
+export interface RawVolumeSurge { ratio: number; isBull: boolean; }
+export interface RawTickTrend { bullPct: number; bearPct: number; pctMove: number; isBull: boolean; }
 
 export type AnyRaw =
-  | RawTrend | RawMomentum | RawWicks | RawVolatility
-  | RawPattern | RawEma | RawRSI | RawVolume | null;
+  | RawWindowDelta | RawMicroMomentum | RawAcceleration
+  | RawEma | RawRSI | RawVolumeSurge | RawTickTrend | null;
 
 export interface SignalItem<T extends AnyRaw = AnyRaw> {
   raw: T;
   direction: Direction;
 }
 
-export type NeutralReason = 'low_score' | 'low_agreement' | 'no_data' | null;
+export type NeutralReason = 'low_score' | 'no_data' | null;
 
 export interface SignalResult {
   score: number;
+  confidence: number;
   signal: Direction;
   agreeCount: number;
   totalCount: number;
   neutralReason: NeutralReason;
   signals: {
-    trend:      SignalItem<RawTrend | null>;
-    momentum:   SignalItem<RawMomentum | null>;
-    wicks:      SignalItem<RawWicks | null>;
-    volatility: SignalItem<RawVolatility | null>;
-    pattern:    SignalItem<RawPattern | null>;
-    ema:        SignalItem<RawEma | null>;
-    rsi:        SignalItem<RawRSI | null>;
-    volume:     SignalItem<RawVolume | null>;
+    windowDelta:   SignalItem<RawWindowDelta | null>;
+    microMomentum: SignalItem<RawMicroMomentum | null>;
+    acceleration:  SignalItem<RawAcceleration | null>;
+    ema:           SignalItem<RawEma | null>;
+    rsi:           SignalItem<RawRSI | null>;
+    volumeSurge:   SignalItem<RawVolumeSurge | null>;
+    tickTrend:     SignalItem<RawTickTrend | null>;
   };
 }
 
@@ -71,10 +67,10 @@ export interface DivergenceResult {
 }
 
 export interface SignalHistoryEntry {
-  candleTime: number;   // outcome candle open time (ms)
-  signal: Direction;    // signal that predicted this candle
-  priceAtOpen: number;  // outcome candle open
-  priceAtClose: number; // outcome candle close
+  candleTime: number;
+  signal: Direction;
+  priceAtOpen: number;
+  priceAtClose: number;
   correct: boolean;
   interval: Interval;
 }

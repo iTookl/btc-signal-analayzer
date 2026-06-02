@@ -1,8 +1,11 @@
 import {
   Candle, Direction, SignalResult, NeutralReason,
-  RawTrend, RawMomentum, RawWicks, RawVolatility, RawPattern, RawEma, RawRSI, RawVolume,
+  RawWindowDelta, RawMicroMomentum, RawAcceleration,
+  RawEma, RawRSI, RawVolumeSurge, RawTickTrend,
   DivergenceResult,
 } from './types';
+
+// ── Helpers ───────────────────────────────────────────────────────────────
 
 function ema(values: number[], period: number): number[] {
   const k = 2 / (period + 1);
@@ -16,92 +19,86 @@ function ema(values: number[], period: number): number[] {
   return result;
 }
 
-function calcTrend(candles: Candle[]): { score: number; raw: RawTrend; direction: Direction } {
-  const last8 = candles.slice(-8);
-  let up = 0; let down = 0;
-  for (const c of last8) {
-    if (c.c > c.o) up++;
-    else if (c.c < c.o) down++;
-  }
-  const ratio = (up - down) / 8;
-  const direction: Direction = ratio > 0.3 ? 'bull' : ratio < -0.3 ? 'bear' : 'neutral';
-  return { score: ratio * 2.0, raw: { up, down, total: 8 }, direction };
-}
+// ── Indicator 1: Window Delta (weight 1–7, dominant) ─────────────────────
+// Answers the exact question Polymarket asks: is BTC above window open right now?
+// Uses current candle's live close (updated by WebSocket) vs its open.
 
-function calcMomentum(candles: Candle[]): { score: number; raw: RawMomentum; direction: Direction } {
+function calcWindowDelta(candles: Candle[]): { score: number; raw: RawWindowDelta; direction: Direction } {
   const last = candles[candles.length - 1];
-  const last5 = candles.slice(-6, -1);
-  const lastBody = Math.abs(last.c - last.o);
-  const avgBody = last5.reduce((s, c) => s + Math.abs(c.c - c.o), 0) / last5.length;
-  const isStrong = lastBody > avgBody * 1.2;
-  const isBull = last.c > last.o;
-  const weight = isStrong ? 1.3 : 0.6;
-  const direction: Direction = isBull ? 'bull' : 'bear';
-  return { score: (isBull ? 1 : -1) * weight, raw: { isBull, isStrong }, direction };
-}
+  const pct = ((last.c - last.o) / last.o) * 100;
+  const absPct = Math.abs(pct);
+  const isBull = pct > 0;
 
-function calcWicks(candles: Candle[]): { score: number; raw: RawWicks; direction: Direction } {
-  const last = candles[candles.length - 1];
-  const range = last.h - last.l;
-  if (range === 0) {
-    return { score: 0, raw: { upperPct: 0, lowerPct: 0 }, direction: 'neutral' };
-  }
-  const upper = last.h - Math.max(last.o, last.c);
-  const lower = Math.min(last.o, last.c) - last.l;
-  const wickBias = (lower - upper) / range;
-  const direction: Direction = wickBias > 0.15 ? 'bull' : wickBias < -0.15 ? 'bear' : 'neutral';
+  let weight: number;
+  if (absPct > 0.10)      weight = 7;
+  else if (absPct > 0.02) weight = 5;
+  else if (absPct > 0.005) weight = 3;
+  else if (absPct > 0.001) weight = 1;
+  else                     weight = 0;
+
+  const direction: Direction = weight === 0 ? 'neutral' : isBull ? 'bull' : 'bear';
   return {
-    score: wickBias * 1.5,
-    raw: { upperPct: Math.round((upper / range) * 100), lowerPct: Math.round((lower / range) * 100) },
+    score: (isBull ? 1 : -1) * weight,
+    raw: { pct: parseFloat(pct.toFixed(4)), weight, isBull },
     direction,
   };
 }
 
-function calcVolatility(candles: Candle[]): { raw: RawVolatility } {
-  const last = candles[candles.length - 1];
-  const last20 = candles.slice(-21, -1);
-  const lastRange = last.h - last.l;
-  const avgRange = last20.reduce((s, c) => s + (c.h - c.l), 0) / last20.length;
-  const ratio = avgRange > 0 ? lastRange / avgRange : 1;
-  const label = ratio > 1.5 ? 'high' : ratio < 0.5 ? 'squeeze' : 'normal';
-  return { raw: { label, ratio } };
+// ── Indicator 2: Micro Momentum (weight 2) ────────────────────────────────
+// Direction of the last 2 closed candles. Both up = bull, both down = bear.
+
+function calcMicroMomentum(candles: Candle[]): { score: number; raw: RawMicroMomentum; direction: Direction } {
+  const c1 = candles[candles.length - 2]; // last closed
+  const c2 = candles[candles.length - 3]; // one before
+  const bull1 = c1.c > c1.o;
+  const bull2 = c2.c > c2.o;
+
+  let direction: Direction;
+  let score: number;
+
+  if (bull1 && bull2)       { direction = 'bull'; score = 2; }
+  else if (!bull1 && !bull2) { direction = 'bear'; score = -2; }
+  else                       { direction = 'neutral'; score = 0; }
+
+  return { score, raw: { bull1, bull2 }, direction };
 }
 
-function calcPattern(candles: Candle[]): { score: number; raw: RawPattern; direction: Direction } {
-  const prev = candles[candles.length - 2];
-  const last = candles[candles.length - 1];
-  const lastBody = Math.abs(last.c - last.o);
-  const prevBody = Math.abs(prev.c - prev.o);
-  const range = last.h - last.l;
+// ── Indicator 3: Acceleration (weight 1.5) ────────────────────────────────
+// Is the last closed candle bigger than the one 2 positions back?
+// Accelerating in the same direction = confirming signal.
 
-  if (range > 0 && lastBody / range < 0.1) {
-    return { score: 0, raw: { type: 'doji' }, direction: 'neutral' };
-  }
+function calcAcceleration(candles: Candle[]): { score: number; raw: RawAcceleration; direction: Direction } {
+  const last = candles[candles.length - 2];
+  const prev = candles[candles.length - 3];
 
-  const isBullLast = last.c > last.o;
-  const isBullPrev = prev.c > prev.o;
+  const currentBody = Math.abs(last.c - last.o);
+  const prevBody    = Math.abs(prev.c - prev.o);
+  const ratio = prevBody > 0 ? currentBody / prevBody : 1;
+  const accelerating = ratio > 1;
+  const isBull = last.c > last.o;
 
-  if (isBullLast && !isBullPrev && lastBody > prevBody && last.c > prev.o && last.o < prev.c) {
-    return { score: 2.0, raw: { type: 'bull_engulf' }, direction: 'bull' };
-  }
-  if (!isBullLast && isBullPrev && lastBody > prevBody && last.c < prev.o && last.o > prev.c) {
-    return { score: -2.0, raw: { type: 'bear_engulf' }, direction: 'bear' };
-  }
+  // Accelerating in the current direction = confirming; decelerating = weakening
+  const score = accelerating ? (isBull ? 1.5 : -1.5) : (isBull ? 0.5 : -0.5);
+  const direction: Direction = isBull ? 'bull' : 'bear';
 
-  return { score: 0, raw: { type: 'normal' }, direction: 'neutral' };
+  return { score, raw: { currentBody, prevBody, ratio: parseFloat(ratio.toFixed(2)), isBull }, direction };
 }
+
+// ── Indicator 4: EMA Crossover 9/21 (weight 1) ───────────────────────────
 
 function calcEma(candles: Candle[]): { score: number; raw: RawEma; direction: Direction } {
   const closes = candles.map(c => c.c);
-  const ema9vals = ema(closes, 9);
+  const ema9vals  = ema(closes, 9);
   const ema21vals = ema(closes, 21);
-  const ema9 = ema9vals[ema9vals.length - 1];
+  const ema9  = ema9vals[ema9vals.length - 1];
   const ema21 = ema21vals[ema21vals.length - 1];
   const isBull = ema9 > ema21;
-  return { score: isBull ? 0.8 : -0.8, raw: { ema9, ema21, isBull }, direction: isBull ? 'bull' : 'bear' };
+  return { score: isBull ? 1 : -1, raw: { ema9, ema21, isBull }, direction: isBull ? 'bull' : 'bear' };
 }
 
-// Wilder's RSI(14) — proper smoothed calculation
+// ── Indicator 5: RSI 14 (weight 1–2 at extremes, 0 neutral) ─────────────
+// Overbought >75 and oversold <25 get higher weight. Neutral zone = 0 weight.
+
 function calcRSI(candles: Candle[], period = 14): { score: number; raw: RawRSI; direction: Direction } {
   if (candles.length < period + 2) {
     return { score: 0, raw: { value: 50, label: 'neutral' }, direction: 'neutral' };
@@ -109,11 +106,8 @@ function calcRSI(candles: Candle[], period = 14): { score: number; raw: RawRSI; 
 
   const prices = candles.map(c => c.c);
   const changes: number[] = [];
-  for (let i = 1; i < prices.length; i++) {
-    changes.push(prices[i] - prices[i - 1]);
-  }
+  for (let i = 1; i < prices.length; i++) changes.push(prices[i] - prices[i - 1]);
 
-  // Seed with simple average of first period
   let avgGain = 0, avgLoss = 0;
   for (let i = 0; i < period; i++) {
     if (changes[i] > 0) avgGain += changes[i];
@@ -122,7 +116,6 @@ function calcRSI(candles: Candle[], period = 14): { score: number; raw: RawRSI; 
   avgGain /= period;
   avgLoss /= period;
 
-  // Wilder smoothing for remaining changes
   for (let i = period; i < changes.length; i++) {
     const gain = changes[i] > 0 ? changes[i] : 0;
     const loss = changes[i] < 0 ? -changes[i] : 0;
@@ -137,136 +130,146 @@ function calcRSI(candles: Candle[], period = 14): { score: number; raw: RawRSI; 
   let score: number;
   let direction: Direction;
 
-  if (rsiVal >= 70) {
-    label = 'overbought'; score = -1.0; direction = 'bear';
-  } else if (rsiVal >= 60) {
-    label = 'overbought'; score = -0.5; direction = 'bear';
-  } else if (rsiVal <= 30) {
-    label = 'oversold'; score = 1.0; direction = 'bull';
-  } else if (rsiVal <= 40) {
-    label = 'oversold'; score = 0.5; direction = 'bull';
-  } else {
-    label = 'neutral'; score = 0; direction = 'neutral';
-  }
+  if (rsiVal >= 75)      { label = 'overbought'; score = -2; direction = 'bear'; }
+  else if (rsiVal >= 60) { label = 'overbought'; score = -1; direction = 'bear'; }
+  else if (rsiVal <= 25) { label = 'oversold';   score = 2;  direction = 'bull'; }
+  else if (rsiVal <= 40) { label = 'oversold';   score = 1;  direction = 'bull'; }
+  else                   { label = 'neutral';    score = 0;  direction = 'neutral'; }
 
   return { score, raw: { value, label }, direction };
 }
 
-// Volume vs 10-candle average — high volume confirms direction, low volume weakens it
-function calcVolume(candles: Candle[]): { score: number; raw: RawVolume | null; direction: Direction } {
-  if (candles.length < 11) {
-    return { score: 0, raw: null, direction: 'neutral' };
+// ── Indicator 6: Volume Surge (weight 1) ─────────────────────────────────
+// Recent 3-bar avg vs prior 3-bar avg. Surge ≥1.5× confirms current direction.
+
+function calcVolumeSurge(candles: Candle[]): { score: number; raw: RawVolumeSurge; direction: Direction } {
+  if (candles.length < 7) {
+    return { score: 0, raw: null as unknown as RawVolumeSurge, direction: 'neutral' };
   }
 
-  const last = candles[candles.length - 1];
-  const prev10 = candles.slice(-11, -1);
-  const avgVol = prev10.reduce((s, c) => s + c.v, 0) / 10;
-  const ratio = avgVol > 0 ? last.v / avgVol : 1;
-  const isBull = last.c > last.o;
-
-  let score: number;
-  let direction: Direction;
+  const recent3 = candles.slice(-4, -1);
+  const prior3  = candles.slice(-7, -4);
+  const recentAvg = recent3.reduce((s, c) => s + c.v, 0) / 3;
+  const priorAvg  = prior3.reduce((s, c)  => s + c.v, 0) / 3;
+  const ratio = priorAvg > 0 ? recentAvg / priorAvg : 1;
+  const isBull = candles[candles.length - 2].c > candles[candles.length - 2].o;
 
   if (ratio >= 1.5) {
-    // High volume confirms current candle direction
-    score = isBull ? 0.8 : -0.8;
-    direction = isBull ? 'bull' : 'bear';
-  } else if (ratio <= 0.7) {
-    // Low volume — weak move, don't amplify
-    score = 0;
-    direction = 'neutral';
-  } else {
-    // Normal volume — mild confirmation
-    score = isBull ? 0.3 : -0.3;
-    direction = isBull ? 'bull' : 'bear';
+    return { score: isBull ? 1 : -1, raw: { ratio: parseFloat(ratio.toFixed(2)), isBull }, direction: isBull ? 'bull' : 'bear' };
   }
-
-  return { score, raw: { ratio: parseFloat(ratio.toFixed(2)), isBull }, direction };
+  return { score: 0, raw: { ratio: parseFloat(ratio.toFixed(2)), isBull }, direction: 'neutral' };
 }
 
-let prevSignal: Direction | null = null;
-const THRESHOLD  = 1.2;
-const NOISE_GUARD = 0.4;
+// ── Indicator 7: Tick Trend (weight 2) ────────────────────────────────────
+// Real-time price ticks: 60%+ directional consistency + >0.005% move triggers signal.
 
-export function analyze(candles: Candle[]): SignalResult {
+function calcTickTrend(ticks: number[]): { score: number; raw: RawTickTrend | null; direction: Direction } {
+  if (ticks.length < 5) return { score: 0, raw: null, direction: 'neutral' };
+
+  let bull = 0, bear = 0;
+  for (let i = 1; i < ticks.length; i++) {
+    if (ticks[i] > ticks[i - 1]) bull++;
+    else if (ticks[i] < ticks[i - 1]) bear++;
+  }
+  const total = bull + bear;
+  if (total === 0) return { score: 0, raw: null, direction: 'neutral' };
+
+  const bullPct = bull / total;
+  const bearPct = bear / total;
+  const pctMove = Math.abs((ticks[ticks.length - 1] - ticks[0]) / ticks[0]) * 100;
+
+  const isBull = bull > bear;
+  const consistency = Math.max(bullPct, bearPct);
+
+  if (consistency >= 0.6 && pctMove >= 0.005) {
+    const direction: Direction = isBull ? 'bull' : 'bear';
+    return {
+      score: isBull ? 2 : -2,
+      raw: {
+        bullPct: parseFloat((bullPct * 100).toFixed(0)),
+        bearPct: parseFloat((bearPct * 100).toFixed(0)),
+        pctMove: parseFloat(pctMove.toFixed(4)),
+        isBull,
+      },
+      direction,
+    };
+  }
+
+  return {
+    score: 0,
+    raw: {
+      bullPct: parseFloat((bullPct * 100).toFixed(0)),
+      bearPct: parseFloat((bearPct * 100).toFixed(0)),
+      pctMove: parseFloat(pctMove.toFixed(4)),
+      isBull,
+    },
+    direction: 'neutral',
+  };
+}
+
+// ── Main analysis ──────────────────────────────────────────────────────────
+
+export function analyze(candles: Candle[], ticks: number[] = []): SignalResult {
   const neutral: SignalResult = {
-    score: 0, signal: 'neutral', agreeCount: 0, totalCount: 0,
+    score: 0, confidence: 0, signal: 'neutral', agreeCount: 0, totalCount: 0,
     neutralReason: 'no_data',
     signals: {
-      trend:      { raw: null, direction: 'neutral' },
-      momentum:   { raw: null, direction: 'neutral' },
-      wicks:      { raw: null, direction: 'neutral' },
-      volatility: { raw: null, direction: 'neutral' },
-      pattern:    { raw: null, direction: 'neutral' },
-      ema:        { raw: null, direction: 'neutral' },
-      rsi:        { raw: null, direction: 'neutral' },
-      volume:     { raw: null, direction: 'neutral' },
+      windowDelta:   { raw: null, direction: 'neutral' },
+      microMomentum: { raw: null, direction: 'neutral' },
+      acceleration:  { raw: null, direction: 'neutral' },
+      ema:           { raw: null, direction: 'neutral' },
+      rsi:           { raw: null, direction: 'neutral' },
+      volumeSurge:   { raw: null, direction: 'neutral' },
+      tickTrend:     { raw: null, direction: 'neutral' },
     },
   };
 
+  // Need enough candles: 21 for EMA seed + RSI 14 + buffer
   if (candles.length < 21) return neutral;
 
-  const trend      = calcTrend(candles);
-  const momentum   = calcMomentum(candles);
-  const wicks      = calcWicks(candles);
-  const volatility = calcVolatility(candles);
-  const pattern    = calcPattern(candles);
-  const emaResult  = calcEma(candles);
-  const rsiResult  = calcRSI(candles);
-  const volResult  = calcVolume(candles);
+  const windowDelta   = calcWindowDelta(candles);
+  const microMomentum = calcMicroMomentum(candles);
+  const acceleration  = calcAcceleration(candles);
+  const emaResult     = calcEma(candles);
+  const rsiResult     = calcRSI(candles);
+  const volumeSurge   = calcVolumeSurge(candles);
+  const tickTrend     = calcTickTrend(ticks);
 
   const rawScore =
-    trend.score + momentum.score + wicks.score +
-    pattern.score + emaResult.score + rsiResult.score + volResult.score;
+    windowDelta.score + microMomentum.score + acceleration.score +
+    emaResult.score + rsiResult.score + volumeSurge.score + tickTrend.score;
 
-  let signal: Direction =
-    Math.abs(rawScore) < THRESHOLD ? 'neutral' : rawScore > 0 ? 'bull' : 'bear';
+  // Confidence: window delta max weight is 7, normalize against that
+  const confidence = Math.min(Math.abs(rawScore) / 7.0, 1.0);
 
-  // Noise guard: only prevents a directional signal from dropping to neutral
-  // when score dips slightly below threshold (anti-whipsaw).
-  // Never overrides a signal that already cleared the threshold.
-  if (
-    prevSignal !== null &&
-    prevSignal !== 'neutral' &&
-    signal === 'neutral' &&
-    Math.abs(rawScore) > THRESHOLD - NOISE_GUARD
-  ) {
-    signal = prevSignal;
-  }
-  prevSignal = signal;
+  // Directional signal — needs minimal score to avoid noise
+  const THRESHOLD = 0.5;
+  let signal: Direction = Math.abs(rawScore) < THRESHOLD ? 'neutral' : rawScore > 0 ? 'bull' : 'bear';
 
-  // Count directional agreement across all 7 indicators (exclude volatility — always neutral)
-  const directional = [trend, momentum, wicks, pattern, emaResult, rsiResult, volResult];
+  const directional = [windowDelta, microMomentum, acceleration, emaResult, rsiResult, volumeSurge, tickTrend];
   const agreeCount  = signal !== 'neutral'
     ? directional.filter(s => s.direction === signal).length
     : 0;
   const totalCount  = directional.length;
 
-  // Require at least 4/7 indicators to agree — below this threshold signal is too noisy
-  const MIN_AGREE = 4;
   let neutralReason: NeutralReason = null;
-  if (signal === 'neutral') {
-    neutralReason = agreeCount < MIN_AGREE ? 'low_agreement' : 'low_score';
-  } else if (agreeCount < MIN_AGREE) {
-    signal = 'neutral';
-    neutralReason = 'low_agreement';
-  }
+  if (signal === 'neutral') neutralReason = 'low_score';
 
   return {
     score: rawScore,
+    confidence,
     signal,
     agreeCount,
     totalCount,
     neutralReason,
     signals: {
-      trend:      { raw: trend.raw,      direction: trend.direction },
-      momentum:   { raw: momentum.raw,   direction: momentum.direction },
-      wicks:      { raw: wicks.raw,      direction: wicks.direction },
-      volatility: { raw: volatility.raw, direction: 'neutral' },
-      pattern:    { raw: pattern.raw,    direction: pattern.direction },
-      ema:        { raw: emaResult.raw,  direction: emaResult.direction },
-      rsi:        { raw: rsiResult.raw,  direction: rsiResult.direction },
-      volume:     { raw: volResult.raw,  direction: volResult.direction },
+      windowDelta:   { raw: windowDelta.raw,   direction: windowDelta.direction },
+      microMomentum: { raw: microMomentum.raw, direction: microMomentum.direction },
+      acceleration:  { raw: acceleration.raw,  direction: acceleration.direction },
+      ema:           { raw: emaResult.raw,     direction: emaResult.direction },
+      rsi:           { raw: rsiResult.raw,     direction: rsiResult.direction },
+      volumeSurge:   { raw: volumeSurge.raw,   direction: volumeSurge.direction },
+      tickTrend:     { raw: tickTrend.raw,     direction: tickTrend.direction },
     },
   };
 }
