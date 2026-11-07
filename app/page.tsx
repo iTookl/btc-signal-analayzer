@@ -4,6 +4,8 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { Candle, PolymarketData, Lang, Interval, Direction, SignalResult, SignalHistoryEntry } from '@/lib/types';
 import { analyze, analyzeDivergence } from '@/lib/analyzer';
+import { candidateSlugs, isCurrentSlug } from '@/lib/polymarket';
+import { applyCandle, klineToCandle, BinanceKline } from '@/lib/candles';
 import { T } from '@/lib/i18n';
 import SignalCard, { TradeMode } from '@/components/SignalCard';
 import SignalGrid from '@/components/SignalGrid';
@@ -83,13 +85,7 @@ function useWindowCountdown(interval: Interval): number {
 
 interface PolyResult { up: number; down: number; }
 
-function getPolymarketSlugs(interval: Interval): string[] {
-  const step = interval === '5m' ? 300 : 900;
-  const now = Math.floor(Date.now() / 1000);
-  const next = Math.ceil(now / step) * step;
-  const prefix = `btc-updown-${interval}-`;
-  return [next, next + step, next - step, next + step * 2].map(ts => `${prefix}${ts}`);
-}
+const nowSec = () => Math.floor(Date.now() / 1000);
 
 async function fetchPolyDirect(slug: string): Promise<PolyResult | null> {
   try {
@@ -206,7 +202,7 @@ function useSignalHistory(
 // ── Binance WebSocket + Polymarket polling ────────────────────────────────
 
 interface BinanceKlineMsg {
-  k: { t: number; o: string; h: string; l: string; c: string; v: string };
+  k: BinanceKline;
 }
 
 const MAX_TICKS = 30;
@@ -217,10 +213,10 @@ function useMarketData(interval: Interval) {
   const [polymarket, setPolymarket] = useState<PolymarketData>({ up: null, down: null });
   const [loading,    setLoading]    = useState(true);
   const [connected,  setConnected]  = useState(false);
+  const [chainlinkPrice, setChainlinkPrice] = useState<number | null>(null);
 
   const wsRef             = useRef<WebSocket | null>(null);
   const slugRef           = useRef<string | null>(null);
-  const chainlinkPriceRef = useRef<number | null>(null);
   const candlesRef        = useRef<Candle[]>([]);
 
   // Keep ref in sync so the 2s tick interval can read current price without stale closure
@@ -275,18 +271,12 @@ function useMarketData(interval: Interval) {
       ws.onclose = () => { if (!destroyed) { setConnected(false); setTimeout(connect, 3000); } };
       ws.onerror = () => ws.close();
       ws.onmessage = (e: MessageEvent) => {
+        if (destroyed) return;
         const msg: BinanceKlineMsg = JSON.parse(e.data as string);
-        const k = msg.k;
-        const closePrice = chainlinkPriceRef.current ?? +k.c;
-        const tick: Candle = { t: k.t, o: +k.o, h: +k.h, l: +k.l, c: closePrice, v: +k.v };
-        setCandles(prev => {
-          if (!prev.length) return prev;
-          const updated = [...prev];
-          const last = updated[updated.length - 1];
-          if (last.t === tick.t) { updated[updated.length - 1] = tick; }
-          else { updated.push(tick); if (updated.length > 50) updated.shift(); }
-          return updated;
-        });
+        // Keep open AND close from the same source (Binance). Mixing in the
+        // Chainlink BTC/USD price skews Window Δ by the USDT/USD basis (~0.1%).
+        const tick = klineToCandle(msg.k);
+        setCandles(prev => applyCandle(prev, tick));
       };
     };
     connect();
@@ -317,8 +307,14 @@ function useMarketData(interval: Interval) {
     const poll = async () => {
       if (destroyed) return;
 
+      // Window rolled over → find the new current market
+      if (slugRef.current && !isCurrentSlug(slugRef.current, interval, nowSec())) {
+        slugRef.current = null;
+        if (!destroyed) setPolymarket({ up: null, down: null });
+      }
+
       if (!slugRef.current) {
-        for (const slug of getPolymarketSlugs(interval)) {
+        for (const slug of candidateSlugs(interval, nowSec())) {
           const result = await fetchPolyDirect(slug);
           if (result) {
             slugRef.current = slug;
@@ -329,7 +325,7 @@ function useMarketData(interval: Interval) {
         try {
           const res = await fetch(`/api/polymarket?interval=${interval}`);
           const data: { up: number | null; down: number | null; slug?: string } = await res.json();
-          if (data.slug && data.up !== null && !destroyed) {
+          if (data.slug && data.up !== null && !destroyed && isCurrentSlug(data.slug, interval, nowSec())) {
             slugRef.current = data.slug;
             setPolymarket({ up: data.up, down: data.down });
           }
@@ -350,7 +346,8 @@ function useMarketData(interval: Interval) {
     return () => { destroyed = true; clearInterval(iv); };
   }, [interval]);
 
-  // Chainlink price — Polymarket oracle, updates ~every 27s on Polygon
+  // Chainlink price — Polymarket oracle. Shown for reference only; NOT mixed
+  // into candles, because candle opens come from Binance (BTC/USDT).
   useEffect(() => {
     let active = true;
     const poll = async () => {
@@ -359,15 +356,7 @@ function useMarketData(interval: Interval) {
         const data: { price: number | null } = await res.json();
         const price = data.price;
         if (!price || isNaN(price) || !active) return;
-        chainlinkPriceRef.current = price;
-        setCandles(prev => {
-          if (!prev.length) return prev;
-          const last = prev[prev.length - 1];
-          if (last.c === price) return prev;
-          const updated = [...prev];
-          updated[updated.length - 1] = { ...last, c: price };
-          return updated;
-        });
+        setChainlinkPrice(price);
       } catch { /* silent */ }
     };
     poll();
@@ -375,7 +364,7 @@ function useMarketData(interval: Interval) {
     return () => { active = false; clearInterval(iv); };
   }, []);
 
-  return { candles, ticks, polymarket, analysis, loading, connected };
+  return { candles, ticks, polymarket, analysis, loading, connected, chainlinkPrice };
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────
@@ -390,7 +379,7 @@ export default function Home() {
   const [lang, toggleLang]          = useLang();
   const [interval, setIntervalMode] = useIntervalMode();
   const [mode, setMode]             = useTradeMode();
-  const { candles, ticks, polymarket, analysis, loading, connected } = useMarketData(interval);
+  const { candles, ticks, polymarket, analysis, loading, connected, chainlinkPrice } = useMarketData(interval);
   const signalHistory = useSignalHistory(interval, analysis, candles, connected);
   const windowSec     = useWindowCountdown(interval);
   const t = T[lang];
@@ -503,6 +492,11 @@ export default function Home() {
               updatedAt={null}
               candleChange={candleChange}
             />
+            {chainlinkPrice !== null && (
+              <div className="text-xs mt-0.5" style={{ color: '#4a5a6a', fontFamily: 'monospace' }}>
+                Chainlink ${chainlinkPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+            )}
           </div>
 
           <div

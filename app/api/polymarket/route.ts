@@ -1,6 +1,8 @@
 // Dynamically find the currently active Polymarket BTC Up/Down market.
 // Supports both 5m (300s boundaries) and 15m (900s boundaries).
-// Slug formats: btc-updown-5m-{ts} and btc-updown-15m-{ts}
+// Slug formats: btc-updown-5m-{ts} and btc-updown-15m-{ts}, ts = window START.
+
+import { candidateSlugs, isCurrentSlug } from '@/lib/polymarket';
 
 interface GammaMarket { outcomePrices?: string; }
 interface GammaEvent {
@@ -39,13 +41,8 @@ async function fetchSlug(slug: string): Promise<MarketResult> {
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const interval = searchParams.get('interval') === '5m' ? '5m' : '15m';
-  const step = interval === '5m' ? 300 : 900;
-  const prefix = `btc-updown-${interval}-`;
-
   const now = Math.floor(Date.now() / 1000);
-  const nextBoundary = Math.ceil(now / step) * step;
-  const candidates = [nextBoundary, nextBoundary + step, nextBoundary - step, nextBoundary + step * 2]
-    .map(ts => `${prefix}${ts}`);
+  const candidates = candidateSlugs(interval, now);
 
   const settled = await Promise.allSettled(candidates.map(fetchSlug));
 
@@ -62,7 +59,8 @@ export async function GET(request: Request) {
     if (searchRes.ok) {
       const events: GammaEvent[] = await searchRes.json();
       for (const event of events) {
-        if (!event.slug?.includes(`btc-updown-${interval}-`)) continue;
+        // Only accept the market for the window we're in — never a future one
+        if (!event.slug || !isCurrentSlug(event.slug, interval, now)) continue;
         if (!event.markets?.length) continue;
         const market = event.markets[0];
         if (!market.outcomePrices) continue;

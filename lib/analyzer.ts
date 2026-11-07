@@ -242,9 +242,13 @@ export function analyze(candles: Candle[], ticks: number[] = []): SignalResult {
   // Confidence: window delta max weight is 7, normalize against that
   const confidence = Math.min(Math.abs(rawScore) / 7.0, 1.0);
 
-  // Directional signal — needs minimal score to avoid noise
-  const THRESHOLD = 0.5;
-  let signal: Direction = Math.abs(rawScore) < THRESHOLD ? 'neutral' : rawScore > 0 ? 'bull' : 'bear';
+  // Directional signal — needs minimal score to avoid noise.
+  // EMA (±1) and Acceleration (±0.5/±1.5) always vote, so on their own they
+  // reach at most |1.5|. Requiring |score| ≥ 2 means at least one of the
+  // conditional indicators (window delta, momentum, RSI, volume, ticks) must
+  // contribute. (Scores are always x.5, so a threshold of 0.5 was unreachable.)
+  const THRESHOLD = 2;
+  const signal: Direction = Math.abs(rawScore) < THRESHOLD ? 'neutral' : rawScore > 0 ? 'bull' : 'bear';
 
   const directional = [windowDelta, microMomentum, acceleration, emaResult, rsiResult, volumeSurge, tickTrend];
   const agreeCount  = signal !== 'neutral'
