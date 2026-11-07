@@ -110,6 +110,7 @@ const EN: Translations = {
     return `Mixed — ${r.bull1 ? 'last↑ prev↓' : 'last↓ prev↑'}, no clear read`;
   },
   acceleration: (r) => {
+    if (r.currentBody === 0) return 'Doji — no direction';
     const dir = r.isBull ? 'bullish' : 'bearish';
     if (r.ratio >= 1.3) return `Accelerating ${dir} — ×${r.ratio.toFixed(1)} bigger`;
     if (r.ratio <= 0.7) return `Decelerating ${dir} — ×${r.ratio.toFixed(1)} smaller`;
@@ -219,6 +220,7 @@ const RU: Translations = {
     return `Смешано — ${r.bull1 ? 'посл↑ пред↓' : 'посл↓ пред↑'}, нет чёткого сигнала`;
   },
   acceleration: (r) => {
+    if (r.currentBody === 0) return 'Доджи — нет направления';
     const dir = r.isBull ? 'бычье' : 'медвежье';
     if (r.ratio >= 1.3) return `Ускоряется ${dir} — ×${r.ratio.toFixed(1)} крупнее`;
     if (r.ratio <= 0.7) return `Замедляется ${dir} — ×${r.ratio.toFixed(1)} меньше`;

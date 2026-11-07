@@ -52,13 +52,16 @@ function calcMicroMomentum(candles: Candle[]): { score: number; raw: RawMicroMom
   const c2 = candles[candles.length - 3]; // one before
   const bull1 = c1.c > c1.o;
   const bull2 = c2.c > c2.o;
+  const bear1 = c1.c < c1.o;
+  const bear2 = c2.c < c2.o;
 
   let direction: Direction;
   let score: number;
 
+  // A doji (close == open) is neither up nor down → breaks the streak
   if (bull1 && bull2)       { direction = 'bull'; score = 2; }
-  else if (!bull1 && !bull2) { direction = 'bear'; score = -2; }
-  else                       { direction = 'neutral'; score = 0; }
+  else if (bear1 && bear2)  { direction = 'bear'; score = -2; }
+  else                      { direction = 'neutral'; score = 0; }
 
   return { score, raw: { bull1, bull2 }, direction };
 }
@@ -76,12 +79,16 @@ function calcAcceleration(candles: Candle[]): { score: number; raw: RawAccelerat
   const ratio = prevBody > 0 ? currentBody / prevBody : 1;
   const accelerating = ratio > 1;
   const isBull = last.c > last.o;
+  const raw = { currentBody, prevBody, ratio: parseFloat(ratio.toFixed(2)), isBull };
+
+  // Doji: no direction to confirm
+  if (currentBody === 0) return { score: 0, raw, direction: 'neutral' };
 
   // Accelerating in the current direction = confirming; decelerating = weakening
   const score = accelerating ? (isBull ? 1.5 : -1.5) : (isBull ? 0.5 : -0.5);
   const direction: Direction = isBull ? 'bull' : 'bear';
 
-  return { score, raw: { currentBody, prevBody, ratio: parseFloat(ratio.toFixed(2)), isBull }, direction };
+  return { score, raw, direction };
 }
 
 // ── Indicator 4: EMA Crossover 9/21 (weight 1) ───────────────────────────
@@ -93,6 +100,7 @@ function calcEma(candles: Candle[]): { score: number; raw: RawEma; direction: Di
   const ema9  = ema9vals[ema9vals.length - 1];
   const ema21 = ema21vals[ema21vals.length - 1];
   const isBull = ema9 > ema21;
+  if (ema9 === ema21) return { score: 0, raw: { ema9, ema21, isBull }, direction: 'neutral' };
   return { score: isBull ? 1 : -1, raw: { ema9, ema21, isBull }, direction: isBull ? 'bull' : 'bear' };
 }
 
@@ -123,7 +131,10 @@ function calcRSI(candles: Candle[], period = 14): { score: number; raw: RawRSI; 
     avgLoss = (avgLoss * (period - 1) + loss) / period;
   }
 
-  const rsiVal = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  // No movement at all → RSI is undefined; treat as the neutral midpoint
+  const rsiVal = avgGain === 0 && avgLoss === 0 ? 50
+    : avgLoss === 0 ? 100
+    : 100 - 100 / (1 + avgGain / avgLoss);
   const value = Math.round(rsiVal);
 
   let label: RawRSI['label'];
@@ -152,9 +163,11 @@ function calcVolumeSurge(candles: Candle[]): { score: number; raw: RawVolumeSurg
   const recentAvg = recent3.reduce((s, c) => s + c.v, 0) / 3;
   const priorAvg  = prior3.reduce((s, c)  => s + c.v, 0) / 3;
   const ratio = priorAvg > 0 ? recentAvg / priorAvg : 1;
-  const isBull = candles[candles.length - 2].c > candles[candles.length - 2].o;
+  const lastClosed = candles[candles.length - 2];
+  const isBull = lastClosed.c > lastClosed.o;
+  const isDoji = lastClosed.c === lastClosed.o;
 
-  if (ratio >= 1.5) {
+  if (ratio >= 1.5 && !isDoji) {
     return { score: isBull ? 1 : -1, raw: { ratio: parseFloat(ratio.toFixed(2)), isBull }, direction: isBull ? 'bull' : 'bear' };
   }
   return { score: 0, raw: { ratio: parseFloat(ratio.toFixed(2)), isBull }, direction: 'neutral' };
@@ -243,10 +256,10 @@ export function analyze(candles: Candle[], ticks: number[] = []): SignalResult {
   const confidence = Math.min(Math.abs(rawScore) / 7.0, 1.0);
 
   // Directional signal — needs minimal score to avoid noise.
-  // EMA (±1) and Acceleration (±0.5/±1.5) always vote, so on their own they
-  // reach at most |1.5|. Requiring |score| ≥ 2 means at least one of the
-  // conditional indicators (window delta, momentum, RSI, volume, ticks) must
-  // contribute. (Scores are always x.5, so a threshold of 0.5 was unreachable.)
+  // EMA (±1) and Acceleration (±0.5/±1.5) vote on almost every candle, so on
+  // their own they reach at most |1.5|. Requiring |score| ≥ 2 means at least
+  // one conditional indicator (window delta, momentum, RSI, volume, ticks)
+  // must contribute.
   const THRESHOLD = 2;
   const signal: Direction = Math.abs(rawScore) < THRESHOLD ? 'neutral' : rawScore > 0 ? 'bull' : 'bear';
 

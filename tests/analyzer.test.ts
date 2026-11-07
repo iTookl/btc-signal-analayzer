@@ -148,9 +148,10 @@ describe('indicator 5 — RSI 14 (contrarian)', () => {
     expect(v).toBeLessThan(60);
     expect(r.direction).toBe('neutral');
   });
-  it('perfectly flat prices → RSI 100 (avgLoss = 0 edge case)', () => {
+  it('REGRESSION: perfectly flat prices → RSI 50, neutral (was 100/overbought)', () => {
     const flat = Array.from({ length: 30 }, (_, i) => candle(P, P, 100, i));
-    expect((analyze(flat).signals.rsi.raw as RawRSI).value).toBe(100);
+    expect((analyze(flat).signals.rsi.raw as RawRSI).value).toBe(50);
+    expect(analyze(flat).signals.rsi.direction).toBe('neutral');
   });
 });
 
@@ -231,8 +232,8 @@ describe('analyze — aggregation', () => {
     expect(r.confidence).toBe(1);
   });
 
-  it('score is always a half-integer (EMA ±1 + acceleration ±0.5/±1.5, rest integers)', () => {
-    for (const step of [-30, -5, 0, 5, 30]) {
+  it('with no dojis, score is a half-integer (EMA ±1 + acceleration ±0.5/±1.5)', () => {
+    for (const step of [-30, -5, 5, 30]) {
       const r = analyze(trend(40, step));
       expect(Math.abs(r.score % 1)).toBe(0.5);
     }
@@ -263,5 +264,39 @@ describe('analyzeDivergence', () => {
   });
   it('rounds upPct', () => {
     expect(analyzeDivergence('bull', 0.505).upPct).toBe(51);
+  });
+});
+
+describe('REGRESSION: zero movement is not a bearish vote', () => {
+  const flat = () => Array.from({ length: 40 }, (_, i) => candle(P, P, 100, i));
+
+  it('completely flat market → every indicator neutral, signal neutral, score 0', () => {
+    const r = analyze(flat());
+    expect(r.signal).toBe('neutral');
+    expect(r.score).toBe(0);
+    Object.values(r.signals).forEach(s => expect(s.direction).toBe('neutral'));
+  });
+
+  it('doji last closed candle → acceleration neutral, score 0', () => {
+    const r = analyze(series([[P, P + 10], [P, P], [P, P]]));
+    expect(r.signals.acceleration.direction).toBe('neutral');
+  });
+
+  it('doji breaks a momentum streak (was counted as bearish)', () => {
+    expect(analyze(series([[P, P - 10], [P, P], [P, P]])).signals.microMomentum.direction).toBe('neutral');
+    expect(analyze(series([[P, P], [P, P], [P, P]])).signals.microMomentum.direction).toBe('neutral');
+    expect(analyze(series([[P, P - 10], [P, P - 10], [P, P]])).signals.microMomentum.direction).toBe('bear');
+  });
+
+  it('volume surge on a doji confirms nothing', () => {
+    const r = analyze(series([
+      [P, P + 1, 100], [P, P + 1, 100], [P, P + 1, 100],
+      [P, P + 1, 500], [P, P + 1, 500], [P, P, 500], [P, P],
+    ]));
+    expect(r.signals.volumeSurge.direction).toBe('neutral');
+  });
+
+  it('EMA exactly equal → neutral', () => {
+    expect(analyze(flat()).signals.ema.direction).toBe('neutral');
   });
 });

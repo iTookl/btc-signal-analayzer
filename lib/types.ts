@@ -73,4 +73,6 @@ export interface SignalHistoryEntry {
   priceAtClose: number;
   correct: boolean;
   interval: Interval;
+  /** How many seconds before close the recorded signal was taken. */
+  secondsLeft?: number;
 }

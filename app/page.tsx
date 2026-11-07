@@ -2,10 +2,11 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import dynamic from 'next/dynamic';
-import { Candle, PolymarketData, Lang, Interval, Direction, SignalResult, SignalHistoryEntry } from '@/lib/types';
+import { Candle, PolymarketData, Lang, Interval, SignalResult, SignalHistoryEntry } from '@/lib/types';
 import { analyze, analyzeDivergence } from '@/lib/analyzer';
 import { candidateSlugs, isCurrentSlug } from '@/lib/polymarket';
 import { applyCandle, klineToCandle, BinanceKline } from '@/lib/candles';
+import { Snapshot, takeSnapshot, resolveSnapshot, addEntry, mergeHistory, parseHistory } from '@/lib/history';
 import { T } from '@/lib/i18n';
 import SignalCard, { TradeMode } from '@/components/SignalCard';
 import SignalGrid from '@/components/SignalGrid';
@@ -114,24 +115,36 @@ function useSignalHistory(
   connected: boolean,
 ): SignalHistoryEntry[] {
   const [history, setHistory] = useState<SignalHistoryEntry[]>([]);
-  const prevCandleTimeRef = useRef<number>(0);
-  const signalRef         = useRef<Direction | null>(null);
-  const pendingRef        = useRef<{ time: number; signal: Direction; price: number } | null>(null);
-  const prevIntervalRef   = useRef<Interval>(interval);
+  const snapshotRef     = useRef<Snapshot | null>(null);
+  const prevIntervalRef = useRef<Interval>(interval);
+  const intervalRef     = useRef<Interval>(interval);
+  useEffect(() => { intervalRef.current = interval; }, [interval]);
 
+  // Browser copy of history, so it survives reloads without Redis
+  const readLocal = (iv: Interval): SignalHistoryEntry[] => {
+    try { return parseHistory(JSON.parse(localStorage.getItem(`sh_${iv}`) ?? '[]'), iv); }
+    catch { return []; }
+  };
+
+  // Server (Redis) entries win; local fills gaps (e.g. Redis not configured)
   function loadHistory(iv: Interval) {
+    const local = readLocal(iv);
     fetch(`/api/history?interval=${iv}`)
       .then(r => r.json())
-      .then((data: unknown) => {
-        if (Array.isArray(data)) setHistory(data as SignalHistoryEntry[]);
-      })
-      .catch(() => {
-        try {
-          const stored = localStorage.getItem(`sh_${iv}`);
-          setHistory(stored ? (JSON.parse(stored) as SignalHistoryEntry[]) : []);
-        } catch { setHistory([]); }
+      .then((data: unknown) => parseHistory(data, iv))
+      .catch(() => [] as SignalHistoryEntry[])
+      .then(server => {
+        if (intervalRef.current !== iv) return; // user switched interval meanwhile
+        // keep entries recorded in this tab while the request was in flight
+        setHistory(prev => mergeHistory(server, mergeHistory(prev.filter(e => e.interval === iv), local)));
       });
   }
+
+  useEffect(() => {
+    if (!history.length) return;
+    const iv = history[0].interval;
+    try { localStorage.setItem(`sh_${iv}`, JSON.stringify(history)); } catch { /* quota / private mode */ }
+  }, [history]);
 
   useEffect(() => {
     loadHistory(interval);
@@ -147,53 +160,28 @@ function useSignalHistory(
 
   useEffect(() => {
     if (interval !== prevIntervalRef.current) {
-      prevIntervalRef.current  = interval;
-      prevCandleTimeRef.current = 0;
-      signalRef.current        = null;
-      pendingRef.current       = null;
-      setHistory([]);
+      prevIntervalRef.current = interval;
+      snapshotRef.current     = null;
       loadHistory(interval);
       return;
     }
 
-    if (!analysis || candles.length < 2) return;
-    const currentCandle = candles[candles.length - 1];
-    const prevCandle    = candles[candles.length - 2];
+    // Same rule as the server cron (lib/history.ts): keep the latest signal
+    // shown ≥10s before close; when that candle closes, record its outcome.
+    if (!analysis || analysis.neutralReason === 'no_data' || candles.length < 2) return;
 
-    if (prevCandleTimeRef.current === 0) {
-      prevCandleTimeRef.current = currentCandle.t;
-      signalRef.current         = analysis.signal;
-      return;
-    }
-
-    if (currentCandle.t !== prevCandleTimeRef.current) {
-      if (pendingRef.current) {
-        const { time, signal } = pendingRef.current;
-        const move    = prevCandle.c - prevCandle.o;
-        const correct = signal === 'bull' ? move > 0 : move < 0;
-        const entry: SignalHistoryEntry = {
-          candleTime:   prevCandle.t,
-          signal,
-          priceAtOpen:  prevCandle.o,
-          priceAtClose: prevCandle.c,
-          correct,
-          interval,
-        };
-        void time;
-        setHistory(prev => {
-          if (prev.some(e => e.candleTime === entry.candleTime)) return prev;
-          return [entry, ...prev].slice(0, 100);
-        });
-        pendingRef.current = null;
-      }
-
-      if (signalRef.current && signalRef.current !== 'neutral') {
-        pendingRef.current = { time: prevCandle.t, signal: signalRef.current, price: prevCandle.c };
+    const snap = snapshotRef.current;
+    if (snap) {
+      const entry = resolveSnapshot(snap, candles, interval);
+      if (entry) {
+        setHistory(prev => addEntry(prev, entry));
+        snapshotRef.current = null;
       }
     }
 
-    prevCandleTimeRef.current = currentCandle.t;
-    signalRef.current         = analysis.signal;
+    const next = takeSnapshot(candles, analysis.signal, interval, Date.now());
+    if (next) snapshotRef.current = next;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candles, analysis, interval]);
 
   return history;
@@ -346,8 +334,9 @@ function useMarketData(interval: Interval) {
     return () => { destroyed = true; clearInterval(iv); };
   }, [interval]);
 
-  // Chainlink price — Polymarket oracle. Shown for reference only; NOT mixed
-  // into candles, because candle opens come from Binance (BTC/USDT).
+  // Chainlink Polygon price — shown for reference only; NOT mixed into candles
+  // (opens come from Binance BTC/USDT), and NOT the Polymarket resolution
+  // source (that is the Chainlink BTC/USD TWAP-60s Data Stream).
   useEffect(() => {
     let active = true;
     const poll = async () => {
@@ -493,8 +482,14 @@ export default function Home() {
               candleChange={candleChange}
             />
             {chainlinkPrice !== null && (
-              <div className="text-xs mt-0.5" style={{ color: '#4a5a6a', fontFamily: 'monospace' }}>
-                Chainlink ${chainlinkPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              <div
+                className="text-xs mt-0.5"
+                style={{ color: '#4a5a6a', fontFamily: 'monospace' }}
+                title={lang === 'ru'
+                  ? 'Фид Chainlink на Polygon, для справки. Polymarket рассчитывается по другому потоку — Chainlink BTC/USD TWAP 60s.'
+                  : 'Chainlink Polygon feed, for reference. Polymarket resolves on a different stream — Chainlink BTC/USD TWAP 60s.'}
+              >
+                Chainlink (Polygon) ${chainlinkPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </div>
             )}
           </div>

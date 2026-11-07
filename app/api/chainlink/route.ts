@@ -1,4 +1,8 @@
-// Chainlink BTC/USD price feed on Polygon (Polymarket runs on Polygon).
+// Chainlink BTC/USD price feed on Polygon — REFERENCE ONLY.
+// NOTE: Polymarket BTC Up/Down markets do NOT resolve on this feed. They use
+// the Chainlink "BTC/USD TWAP 60s" Data Stream (paid API), and resolve "Up"
+// when end ≥ start. This on-chain feed updates on heartbeat/deviation, so it
+// can lag; don't use it as the resolution price.
 // Primary: on-chain eth_call via Polygon publicnode (free, no API key).
 // Fallback: CoinGecko public API.
 //

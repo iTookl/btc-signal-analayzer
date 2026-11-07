@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockFetch, json, req, trend, toKline } from './helpers';
-import { SignalHistoryEntry } from '@/lib/types';
+import { SignalHistoryEntry, Candle } from '@/lib/types';
+import { analyze } from '@/lib/analyzer';
 
 // ── In-memory Redis mock ──────────────────────────────────────────────────
 const store = vi.hoisted(() => ({ data: new Map<string, unknown>(), fail: false, ctorArgs: [] as unknown[] }));
@@ -252,48 +253,99 @@ describe('/api/cron/record', async () => {
     expect((await post('s3cret')).status).toBe(503);
   });
 
-  it('records the last CLOSED candle for both intervals, predicted without it', async () => {
-    // 30 up candles, then outcome candle −50, then forming candle
-    const c = trend(32, 10);
-    c[30] = { ...c[30], o: 100300, c: 100250 };
-    mockFetch(() => json(c.map(toKline)));
-    const res = await post('s3cret');
-    expect(await res.json()).toEqual({ ok: true });
+  // ── Snapshot → resolve flow ──
+  const STEP = { '5m': 300_000, '15m': 900_000 } as const;
+  const W0 = 1_794_042_900_000; // a 15m (and 5m) boundary
+  type Iv = keyof typeof STEP;
+  /** 30 up-trend candles whose last (forming) candle opens at `formingOpen`. */
+  const feedAt = (iv: Iv, formingOpen: number, edit?: (c: Candle) => Candle) =>
+    trend(30, 10).map((c, i, a) => {
+      const withT = { ...c, t: formingOpen - (a.length - 1 - i) * STEP[iv] };
+      return edit ? edit(withT) : withT;
+    });
+  const runAt = async (nowMs: number, feeds: Record<Iv, Candle[]>) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(nowMs);
+    mockFetch(url => json(feeds[url.includes('interval=5m') ? '5m' : '15m'].map(toKline)));
+    return (await post('s3cret')).json();
+  };
+  const hist = (iv: Iv) => (store.data.get(`signals:${iv}`) ?? []) as SignalHistoryEntry[];
+  const pend = (iv: Iv) => store.data.get(`signals:pending:${iv}`) as { candleTime: number; signal: string; secondsLeft: number } | undefined;
 
+  it('mid-window run snapshots the LIVE signal of the forming candle (same as UI)', async () => {
+    const feeds = { '5m': feedAt('5m', W0), '15m': feedAt('15m', W0) };
+    expect(await runAt(W0 + 60_000, feeds)).toEqual({ ok: true });
     for (const iv of ['5m', '15m'] as const) {
-      const [e] = store.data.get(`signals:${iv}`) as SignalHistoryEntry[];
-      expect(e.candleTime).toBe(c[30].t);
-      expect(e.priceAtOpen).toBe(100300);
-      expect(e.priceAtClose).toBe(100250);
-      expect(e.interval).toBe(iv);
-      expect(e.signal).toBe('bull');   // up-trend prediction…
-      expect(e.correct).toBe(false);   // …but the candle closed down
+      expect(pend(iv)).toEqual({ candleTime: W0, signal: analyze(feeds[iv]).signal, secondsLeft: STEP[iv] / 1000 - 60 });
+      expect(hist(iv)).toEqual([]);
     }
   });
 
-  it('marks a correct prediction', async () => {
-    mockFetch(() => json(trend(32, 10).map(toKline)));
-    await post('s3cret');
-    expect((store.data.get('signals:5m') as SignalHistoryEntry[])[0].correct).toBe(true);
+  it('after the candle closes, the snapshot is recorded with the real outcome', async () => {
+    await runAt(W0 + 60_000, { '5m': feedAt('5m', W0), '15m': feedAt('15m', W0) });
+    // 15m later: W0 candle closed DOWN; signal was bull → wrong
+    const down = (c: Candle) => c.t === W0 ? { ...c, o: 100_300, c: 100_250 } : c;
+    const next = W0 + 900_000;
+    await runAt(next + 30_000, { '5m': feedAt('5m', next, down), '15m': feedAt('15m', next, down) });
+    for (const iv of ['5m', '15m'] as const) {
+      expect(hist(iv)).toEqual([{
+        candleTime: W0, signal: 'bull', priceAtOpen: 100_300, priceAtClose: 100_250,
+        correct: false, interval: iv, secondsLeft: STEP[iv] / 1000 - 60,
+      }]);
+      expect(pend(iv)!.candleTime).toBe(next); // new snapshot for the new candle
+    }
   });
 
-  it('is idempotent for the same candle', async () => {
-    mockFetch(() => json(trend(32, 10).map(toKline)));
-    await post('s3cret');
-    await post('s3cret');
-    expect(store.data.get('signals:15m')).toHaveLength(1);
+  it('a later snapshot (still ≥10s before close) replaces an earlier one', async () => {
+    const f = { '5m': feedAt('5m', W0), '15m': feedAt('15m', W0) };
+    await runAt(W0 + 60_000, f);
+    await runAt(W0 + 870_000, f); // 30s left on 15m
+    expect(pend('15m')!.secondsLeft).toBe(30);
   });
 
-  it('keeps newest first and caps history at 100', async () => {
-    const old = Array.from({ length: 100 }, (_, i) => ({ candleTime: i, signal: 'bull', priceAtOpen: 1, priceAtClose: 2, correct: true, interval: '5m' }));
-    store.data.set('signals:5m', old);
-    const c = trend(32, 10);
-    mockFetch(() => json(c.map(toKline)));
-    await post('s3cret');
-    const h = store.data.get('signals:5m') as SignalHistoryEntry[];
+  it('runs inside the snipe window (<10s left) keep the earlier snapshot', async () => {
+    const f = { '5m': feedAt('5m', W0), '15m': feedAt('15m', W0) };
+    await runAt(W0 + 870_000, f);
+    await runAt(W0 + 895_000, f); // 5s left
+    expect(pend('15m')!.secondsLeft).toBe(30);
+  });
+
+  it('flat candle resolves Up (Polymarket rule end ≥ start) → bull is correct', async () => {
+    await runAt(W0 + 60_000, { '5m': feedAt('5m', W0), '15m': feedAt('15m', W0) });
+    const flat = (c: Candle) => c.t === W0 ? { ...c, o: 100_300, c: 100_300 } : c;
+    const next = W0 + 900_000;
+    await runAt(next + 30_000, { '5m': feedAt('5m', next, flat), '15m': feedAt('15m', next, flat) });
+    expect(hist('15m')[0].correct).toBe(true);
+  });
+
+  it('is idempotent: resolving twice records one entry', async () => {
+    await runAt(W0 + 60_000, { '5m': feedAt('5m', W0), '15m': feedAt('15m', W0) });
+    const next = W0 + 900_000;
+    const f = { '5m': feedAt('5m', next), '15m': feedAt('15m', next) };
+    store.data.set('signals:pending:15m', { candleTime: W0, signal: 'bull', secondsLeft: 60 });
+    await runAt(next + 30_000, f);
+    store.data.set('signals:pending:15m', { candleTime: W0, signal: 'bull', secondsLeft: 60 });
+    await runAt(next + 60_000, f);
+    expect(hist('15m')).toHaveLength(1);
+  });
+
+  it('keeps newest first and caps history at 100; drops junk rows', async () => {
+    const old = Array.from({ length: 100 }, (_, i) => ({ candleTime: i, signal: 'bull', priceAtOpen: 1, priceAtClose: 2, correct: true, interval: '15m' }));
+    store.data.set('signals:15m', [...old, { junk: true }]);
+    store.data.set('signals:pending:15m', { candleTime: W0, signal: 'bear', secondsLeft: 60 });
+    const next = W0 + 900_000;
+    await runAt(next + 30_000, { '5m': feedAt('5m', next), '15m': feedAt('15m', next) });
+    const h = hist('15m');
     expect(h).toHaveLength(100);
-    expect(h[0].candleTime).toBe(c[30].t);
-    expect(h.at(-1)!.candleTime).toBe(98);
+    expect(h[0].candleTime).toBe(W0);
+    expect(h.at(-1)!.candleTime).toBe(1);
+  });
+
+  it('drops a snapshot whose candle scrolled out of the series', async () => {
+    store.data.set('signals:pending:15m', { candleTime: 1, signal: 'bull', secondsLeft: 60 });
+    await runAt(W0 + 60_000, { '5m': feedAt('5m', W0), '15m': feedAt('15m', W0) });
+    expect(hist('15m')).toEqual([]);
+    expect(pend('15m')!.candleTime).toBe(W0);
   });
 
   it('skips when Binance returns too few candles or an error', async () => {

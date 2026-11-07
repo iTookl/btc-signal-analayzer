@@ -1,8 +1,7 @@
 import { Redis } from '@upstash/redis';
 import { analyze } from '@/lib/analyzer';
-import { SignalHistoryEntry, Interval, Candle } from '@/lib/types';
-
-const MAX_ENTRIES = 100;
+import { Interval, Candle } from '@/lib/types';
+import { Snapshot, takeSnapshot, resolveSnapshot, addEntry, parseHistory, MAX_HISTORY } from '@/lib/history';
 
 function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL   ?? process.env.UPSTASH_REDIS_REST_URL;
@@ -29,42 +28,33 @@ async function fetchCandles(interval: Interval): Promise<Candle[]> {
   }));
 }
 
-async function recordInterval(interval: Interval, redis: Redis): Promise<void> {
+// Each run does two things (see lib/history.ts for the shared rule):
+//  1. Resolve: if the snapshot stored last time belongs to a candle that has
+//     since closed, write it to history with the real outcome.
+//  2. Snapshot: store the live signal of the FORMING candle — the same
+//     analyze(candles) the UI shows — unless we're already in the snipe window.
+// So history holds "the last signal seen ≥10s before close" per candle. Run
+// the cron often (every 1 min) so that snapshot is close to the snipe moment.
+// Server has no tick stream, so Tick Trend is 0 here (it's ±2 at most in UI).
+async function recordInterval(interval: Interval, redis: Redis, nowMs: number): Promise<void> {
   const candles = await fetchCandles(interval);
-  // Need at least 24 candles: 14 for RSI seed + some buffer + outcome + forming
-  if (candles.length < 24) return;
+  if (candles.length < 21) return;
 
-  // candles[-1] is the currently forming candle
-  // candles[-2] is the most recently CLOSED candle → this is the OUTCOME
-  // analyze(candles[0..-3]) gives the signal that was active at candles[-3] close,
-  // which is the prediction for candles[-2]
-  const outcomeCandle = candles[candles.length - 2];
-  const predCandles   = candles.slice(0, -2);
+  const pendingKey = `signals:pending:${interval}`;
+  const historyKey = `signals:${interval}`;
 
-  const key = `signals:${interval}`;
-  const existing = (await redis.get<SignalHistoryEntry[]>(key)) ?? [];
+  const pending = await redis.get<Snapshot>(pendingKey);
+  if (pending) {
+    const entry = resolveSnapshot(pending, candles, interval);
+    if (entry) {
+      const existing = parseHistory(await redis.get(historyKey), interval);
+      const updated  = addEntry(existing, entry, MAX_HISTORY);
+      if (updated !== existing) await redis.set(historyKey, updated);
+    }
+  }
 
-  // Skip if we already recorded this candle
-  if (existing.some(e => e.candleTime === outcomeCandle.t)) return;
-
-  const analysis = analyze(predCandles);
-  const move     = outcomeCandle.c - outcomeCandle.o;
-  // neutral = no directional prediction; mark as incorrect so it doesn't inflate win rate
-  const correct  = analysis.signal === 'neutral'
-    ? false
-    : analysis.signal === 'bull' ? move > 0 : move < 0;
-
-  const entry: SignalHistoryEntry = {
-    candleTime:   outcomeCandle.t,
-    signal:       analysis.signal,
-    priceAtOpen:  outcomeCandle.o,
-    priceAtClose: outcomeCandle.c,
-    correct,
-    interval,
-  };
-
-  const updated = [entry, ...existing].slice(0, MAX_ENTRIES);
-  await redis.set(key, updated);
+  const snap = takeSnapshot(candles, analyze(candles).signal, interval, nowMs);
+  if (snap) await redis.set(pendingKey, snap);
 }
 
 export async function GET(): Promise<Response> {
@@ -84,9 +74,10 @@ export async function POST(request: Request): Promise<Response> {
   const redis = getRedis();
   if (!redis) return Response.json({ error: 'Redis not configured' }, { status: 503 });
 
+  const now = Date.now();
   const results = await Promise.allSettled([
-    recordInterval('5m', redis),
-    recordInterval('15m', redis),
+    recordInterval('5m', redis, now),
+    recordInterval('15m', redis, now),
   ]);
 
   const errors = results
